@@ -1,0 +1,68 @@
+//
+//  newlife.txt
+//  universa
+//
+//  Created by Nick Packer on 26/09/2025.
+//
+
+
+import SwiftUI
+
+struct LifeformsPageView: View {
+    @State private var selection = 0
+    @State private var previousSelection = 0
+    private let count = 4
+
+    var body: some View {
+        LazyPager(pageCount: count, index: $selection) { i in
+            page(i)
+        }
+        .onChange(of: selection) { oldVal, newVal in
+            guard oldVal != newVal else { return }
+            // Deactivate old AFTER state change so old page still has old isActive flag.
+            deactivate(oldVal)
+            // Activate new on next run loop so child views see updated isActive.
+            DispatchQueue.main.async {
+                activate(newVal)
+            }
+            previousSelection = newVal
+        }
+        .onAppear {
+            previousSelection = selection
+            DispatchQueue.main.async {
+                activate(selection)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func page(_ i: Int) -> some View {
+        let active = selection == i
+        switch i {
+        case 0:
+            JellyfishLifeformViewAsync(isActive: active)
+        case 1:
+            MeshBirdLifeformViewAsync(isActive: active)
+        case 2:
+            BarleyLifeformView_New(isActive: active)
+        case 3:
+            BoidsFlockView(isActive: active)
+        default:
+            Color.clear
+        }
+        // Optional: per-page appear hook (if a page is created already active)
+     //   .onAppear {
+      //      if active { activate(i) }
+      //  }
+    }
+
+    private func activate(_ i: Int) {
+        // Debug / external start logic
+         print("Activate page \(i)")
+    }
+
+    private func deactivate(_ i: Int) {
+        // Debug / external stop logic
+        print("Deactivate page \(i)")
+    }
+}

@@ -1,0 +1,37 @@
+
+        .onAppear {
+            loadMIDISlots()
+            syncLFOHistoriesToSlots()
+            simulationManager.isActive = isActive // Always activate simulation on appear
+            midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect() // Restart MIDI clock
+        }
+        .onDisappear {
+            simulationManager.isActive = false // Deactivate simulation on disappear
+            midiClock.upstream.connect().cancel() // Cancel MIDI clock
+        }
+
+
+Does it use simulation manager like the other
+Edit the simulation to make scnView and the sceneReference weak.
+Edit the simulation lifeformview to add .onDisappear for cleanup and .onappear to restablishe the simulation
+
+Does the
+
+/////////////////////////////////////
+
+//right atfter scnviewref: SCNVIEW = NIL
+@State private var pinchGesture: UIPinchGestureRecognizer? = nil
+
+//inside onAppear of the simulation manager view add this code
+// Add pinch gesture recognizer if not present
+if let scnView = scnViewRef, pinchGesture == nil {
+    let pinch = UIPinchGestureRecognizer(target: nil, action: nil)
+    scnView.addGestureRecognizer(pinch)
+    pinchGesture = pinch
+}
+//inside onDisappear of the simulation manager view add this code
+// Remove pinch gesture recognizer if present
+if let scnView = scnViewRef, let pinch = pinchGesture {
+    scnView.removeGestureRecognizer(pinch)
+    pinchGesture = nil
+}

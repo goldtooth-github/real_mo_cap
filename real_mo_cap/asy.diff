@@ -1,0 +1,172 @@
+--- /Users/nick/Desktop/lifeform/dumbmachine/universa/universa/oldMeshBirdSimulationAsync.txt	Thu Nov 13 14:17:16 2025
++++ /Users/nick/Desktop/lifeform/dumbmachine/universa/universa/MeshBirdSimulationAsync.swift	Wed Nov 12 21:45:07 2025
+@@ -4,9 +4,9 @@
+ 
+ // MARK: - MeshBirdSimulationAsync (display-link / renderer driven)
+ final class MeshBirdSimulationAsync: NSObject, LifeformSimulation, SCNSceneRendererDelegate {
+-
+     // Inner synchronous core
+     public let inner: MeshBirdSimulation
++    var perFrameCallback: (() -> Void)?
+ 
+     // Bridged refs
+     public var sceneReference: SCNScene? {
+@@ -19,24 +19,26 @@
+             attachRendererIfPossible()
+         }
+     }
+-
+     var visualBounds: Float { inner.visualBounds }
+ //what the yeah
+     // Timing
+     private var lastTime: TimeInterval = 0
+     private var isPaused: Bool = false
+-    private var dtClamp: Float = 1.0 / 30.0      // Max step (prevents large jumps)
++    private var dtClamp: Float = 1.0 / 30.0
+     private var fixedTimeEnabled = false
+     private var accumulator: Float = 0
+-    private let fixedStep: Float = 1.0 / 60.0     // If fixed stepping enabled
++    private let fixedStep: Float = 1.0 / 60.0
+ 
+-    // Lifecycle flags for compatibility with ModifiedSimulationView
+-    private var externallyStopped: Bool = false   // True when STOP requested
+-    private var requestedStart: Bool = false       // Start requested before scnView available
++    // Lifecycle flags
++    private var externallyStopped: Bool = false
++    private var requestedStart: Bool = false
+ 
+-    // Debounce for heavy reset triggers (optional)
++    // Debounce for heavy reset triggers
+     private var pendingReset = false
+     private var resetDispatchWork: DispatchWorkItem?
++
++    // NEW: coalesce main-thread per-frame callback dispatch
++    private var midiCallbackPending = false
+ 
+     // Init
+     init(scene: SCNScene, scnView: SCNView?) {
+@@ -53,45 +55,41 @@
+     // MARK: - Public control API
+     func setWingFlapSpeed(_ v: Float) { inner.setWingFlapSpeed(v) }
+     func setBirdRotation(_ v: Float) { inner.setBirdRotation(v) }
+-    func setBirdSize(_ v: Float)    { inner.setBirdSize(v) }
++    func setBirdSize(_ v: Float) { inner.setBirdSize(v) }
+     func setWindIntensity(_ v: Float) { inner.setWindIntensity(v) }
+     func translate(dx: Float, dy: Float, dz: Float) { inner.translate(dx: dx, dy: dy, dz: dz) }
+ 
+     // MARK: - Trackers
+     func trackerNames() -> [String] { inner.trackerNames() }
+-    func jointWorldPosition(_ name: String) -> SCNVector3? { inner.jointWorldPosition(name) }
+-    func projectedJointXY127(jointName: String) -> (x: Int, y: Int)? { inner.projectedJointXY127(jointName: jointName) }
++    @MainActor func jointWorldPosition(_ name: String) -> SCNVector3? { inner.jointWorldPosition(name) }
++    @MainActor func projectedJointXY127(jointName: String) -> (x: Int, y: Int)? { inner.projectedJointXY127(jointName: jointName) }
+ 
+     // MARK: - Pause
+     @MainActor func setPaused(_ paused: Bool) {
+         isPaused = paused
+         inner.setSceneGraphPaused(paused)
+-        scnView?.isPlaying = !paused    // keep render loop alive
++        scnView?.isPlaying = !paused
+     }
+ 
+-    // MARK: - Start/Stop (compatibility with legacy task-based lifecycle)
++    // MARK: - Start/Stop
+     @MainActor func startAsyncSimulation() {
+         requestedStart = true
+         externallyStopped = false
+-        lastTime = 0 // reset timing to avoid a huge first dt after resume
++        lastTime = 0
+         attachRendererIfPossible()
+         scnView?.isPlaying = true
+     }
+-
+-    @MainActor func stopAsyncSimulation() {
+-        externallyStopped = true
+-    }
++    @MainActor func stopAsyncSimulation() { externallyStopped = true }
+ 
+     // MARK: - Renderer Attach
+     private func attachRendererIfPossible() {
+         guard let v = scnView else { return }
+-        // Ensure delegate only set once (avoid redundant assignments)
+         if v.delegate !== self { v.delegate = self }
+         if requestedStart && !externallyStopped { v.isPlaying = true }
+         if #available(iOS 13.0, *) { v.rendersContinuously = true }
+     }
+ 
+-    // MARK: - Debounced heavy reset (optional use)
++    // MARK: - Debounced heavy reset
+     func scheduleResetDebounced(after delay: TimeInterval = 0.05) {
+         resetDispatchWork?.cancel()
+         let work = DispatchWorkItem { [weak self] in
+@@ -105,24 +103,11 @@
+ 
+     // MARK: - SCNSceneRendererDelegate
+     func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+-        // Honor stop / pause flags
+-        if externallyStopped || isPaused {
+-            lastTime = time
+-            return
+-        }
+-        // If start not requested yet, don't progress
+-        if !requestedStart {
+-            lastTime = time
+-            return
+-        }
+-        // First frame bootstrap
+-        if lastTime == 0 {
+-            lastTime = time
+-            return
+-        }
++        if externallyStopped || isPaused { lastTime = time; return }
++        if !requestedStart { lastTime = time; return }
++        if lastTime == 0 { lastTime = time; return }
+         var dt = Float(time - lastTime)
+         lastTime = time
+-        // Clamp large spikes
+         if dt > dtClamp { dt = dtClamp }
+         if fixedTimeEnabled {
+             accumulator += dt
+@@ -133,6 +118,13 @@
+         } else {
+             update(deltaTime: dt)
+         }
++        if let cb = perFrameCallback, !midiCallbackPending {
++            midiCallbackPending = true
++            DispatchQueue.main.async { [weak self] in
++                cb()
++                self?.midiCallbackPending = false
++            }
++        }
+     }
+ 
+     // MARK: - Cleanup
+@@ -142,26 +134,18 @@
+         scnView = nil
+         sceneReference = nil
+     }
+-
+-    deinit {
+-        print("[MeshBirdSimulationAsync] deinit called")
+-    }
+-
++    deinit { print("[MeshBirdSimulationAsync] deinit called") }
+     func teardownAndDispose() {
+-        // Detach renderer delegate and release references
+         scnView?.delegate = nil
+         scnView = nil
+         sceneReference = nil
+         inner.teardownAndDispose()
+     }
+ 
+-    // Expose heartbeat state
++    // Heartbeat exposure
+     var heartbeat: Bool { inner.heartbeat }
+-    // Expose latched heartbeat for MIDI/LFO
+     var heartbeatLatched: Bool { inner.heartbeatLatchedPublic }
+-    // Expose heartbeat BPM (averaged)
+     var heartbeatBPM: Float { inner.heartbeatBPM }
+-    // Expose heartbeat BPM (instantaneous)
+     var heartbeatBPMInstant: Float { inner.heartbeatBPMInstant }
+ }
+ 

@@ -1,0 +1,228 @@
+import SwiftUI
+import SceneKit
+
+
+import UIKit
+
+struct GrowingPlantCaterpillarLifeformView: View {
+    var isActive: Bool = false
+    @StateObject private var cameraState = CameraOrbitState()
+    @State private var simulation: GrowingPlantCaterpillarSimulation? = nil
+    @State private var showMidiMenu: Bool = false
+    @State private var midiSlots: [MIDIParams] = []
+    @State private var displayLFOOutputs: Bool = false
+    @State private var lfoHistories: [[CGFloat]] = []
+    private let lfoMaxSamples: Int = 160
+    @State private var midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    @State private var lastSentCCValues: [Int: Int] = [:]
+    @State private var midiFocusIndex: Int? = nil
+    @State private var scnViewRef: SCNView? = nil
+    private let midiSlotsKey = "MIDI_SLOTS_GROWING_PLANT_LADYBIRDS"
+    private let segmentPalette: [Color] = [.red,.orange,.yellow,.green,.blue,.indigo,.purple]
+    private let config = LifeformViewConfig(
+        initialAzimuth: 0,
+        initialElevation: 0,
+        initialRadius: 16,
+        minRadius: 6,
+        maxRadius: 28,
+        cameraControlMode: .nicks_control,
+        ambientLightIntensity: 0.55,
+        directionalLightIntensity: 0.95,
+        directionalLightAngles: SCNVector3(x: -Float.pi/5, y: Float.pi/4, z: 0),
+        updateInterval: 0.016,
+        title: "Growing Plant Ladybirds",
+        description: "A plant grows new leaves while 5 ladybird insects explore and eat them. Each ladybird is trackable.",
+        controlPanelColor: Color.black.opacity(0.7),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.green.opacity(0.6)
+    )
+    @State private var rotationAngle: Float = 0.0 // NEW: rotation angle in degrees
+    @State private var speedMultiplier: Float = 5.0
+    @State private var sceneScale: Float = 1.0 // NEW global scene scale (pinch)
+    private let sceneScaleRange: ClosedRange<Float> = 0.5...5.5
+
+    var body: some View {
+        
+        ModifiedSimulationView<GrowingPlantCaterpillarSimulation>(
+            config: config,
+            customCameraState: cameraState,
+            createSimulation: { scene in
+                let sim = GrowingPlantCaterpillarSimulation(scene: scene, scnView: nil)
+                simulation = sim
+                sim.setRotationAngle(rotationAngle) // NEW apply rotation
+                sim.setSpeedMultiplier(speedMultiplier)
+                sim.setGlobalScale(sceneScale)
+                return sim
+            },
+            controlsBuilder: { _ in
+                AnyView(
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text("Rotation")
+                                .foregroundColor(config.controlTextColor)
+                            Slider(value: Binding(get: { Double(rotationAngle) }, set: { v in
+                                rotationAngle = Float(v)
+                                simulation?.setRotationAngle(rotationAngle)
+                            }), in: 0.0...360.0, step: 1.0)
+                            Text(String(format: "%.0f°", rotationAngle))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        HStack { // NEW global scene scale control
+                            Text("Scene")
+                                .foregroundColor(config.controlTextColor)
+                            Slider(value: Binding(get: { Double(sceneScale) }, set: { v in
+                                sceneScale = Float(v)
+                                simulation?.setGlobalScale(sceneScale)
+                            }), in: Double(sceneScaleRange.lowerBound)...Double(sceneScaleRange.upperBound), step: 0.01)
+                            Text(String(format: "%.2f", sceneScale))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        HStack {
+                            Text("Speed")
+                                .foregroundColor(config.controlTextColor)
+                            Slider(value: Binding(get: { Double(speedMultiplier) }, set: { v in
+                                speedMultiplier = Float(v)
+                                simulation?.setSpeedMultiplier(speedMultiplier)
+                            }), in: 0.2...20.0, step: 0.01)
+                            Text(String(format: "%.2f", speedMultiplier))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        Toggle("Display LFO outputs", isOn: $displayLFOOutputs)
+                            .toggleStyle(.switch)
+                            .foregroundColor(config.controlTextColor)
+                        HStack {
+                            Button(action: { showMidiMenu.toggle() }) {
+                                HStack { Image(systemName: "waveform"); Text("MIDI Settings") }
+                                    .foregroundColor(config.controlTextColor)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
+                                    .background(Color.black.opacity(0.4))
+                                    .cornerRadius(8)
+                            }
+                            Button("Reset") { simulation?.reset(); simulation?.setRotationAngle(rotationAngle); simulation?.setSpeedMultiplier(speedMultiplier); simulation?.setGlobalScale(sceneScale) }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(config.buttonBackgroundColor)
+                                .cornerRadius(8)
+                                .foregroundColor(config.controlTextColor)
+                        }
+                        Text("5 ladybirds are trackable (screen X/Y). Pinch to scale scene, drag to translate.")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.55))
+                    }
+                        .padding(.vertical, 8)
+                )
+            },
+            onViewReady: { _, scn in
+                simulation?.scnView = scn; scnViewRef = scn
+            },
+            isActive: isActive,
+            systemScaleGetter: { sceneScale }, // NEW pinch getter
+            systemScaleSetter: { newVal in // NEW pinch setter
+                let clamped = min(max(newVal, sceneScaleRange.lowerBound), sceneScaleRange.upperBound)
+                if abs(clamped - sceneScale) > 0.0001 { sceneScale = clamped; simulation?.setGlobalScale(clamped) }
+            },
+            systemScaleRange: sceneScaleRange,
+            simulationDragHandler: { delta in // NEW drag translation
+                let factor: Float = 0.02
+                let movementMultiplier: Float = 2.0
+                let dirs = cameraState.panDirectionVectors()
+                let right = dirs.right
+                let horiz = Float(-delta.width) * factor * movementMultiplier
+                simulation?.translate(dx: right.x * horiz, dy: 0, dz: right.z * horiz)
+                let vert = -Float(delta.height) * factor * movementMultiplier
+                simulation?.translate(dx: 0, dy: vert, dz: 0)
+            },
+            enableParallaxPan: false
+        )
+        .overlay(alignment: .top) {
+            if displayLFOOutputs && !midiSlots.isEmpty {
+                let labels = midiSlots.map { coordForTracker($0.tracked) }
+                let colors = midiSlots.map { colorForTracker($0.tracked) }
+                LFOOverlayView(labels: labels, histories: lfoHistories, colors: colors, onDoubleTap: { idx in
+                    if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                })
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            }
+        }
+        .sheet(isPresented: $showMidiMenu) {
+            let trackers = makeLadybirdTrackers(simulation)
+            let trackerColors = makeLadybirdTrackerColors(simulation)
+            let trackerColorNames = makeLadybirdTrackerColorNames(simulation)
+            MIDIMenuView(
+                slots: $midiSlots,
+                trackers: trackers,
+                trackerColors: trackerColors,
+                trackerColorNames: trackerColorNames,
+                focusIndex: $midiFocusIndex,
+                onSend: { slots in
+                    guard let sim = simulation else { return }
+                    for slot in slots {
+                        guard let val = resolveLadybirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                        MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
+                    }
+                }
+            )
+        }
+        .onAppear { loadMIDISlots(); syncLFOHistoriesToSlots() }
+        .onChange(of: midiSlots) { _, _ in saveMIDISlots(); lastSentCCValues = lastSentCCValues.filter { $0.key < midiSlots.count }; syncLFOHistoriesToSlots() }
+        .onReceive(midiClock) { _ in
+            guard isActive, let sim = simulation else { return }
+            if sim.scnView == nil, let v = scnViewRef { sim.scnView = v }
+            if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+            for (i, slot) in midiSlots.enumerated() {
+                guard let val = resolveLadybirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                if lastSentCCValues[i] != val { MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val); lastSentCCValues[i] = val }
+                let norm = CGFloat(val) / 127.0
+                if lfoHistories.indices.contains(i) { var h = lfoHistories[i]; h.append(norm); if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }; lfoHistories[i] = h }
+            }
+        }
+    }
+
+    // MARK: - MIDI helpers
+    private func loadMIDISlots() { if let data = UserDefaults.standard.data(forKey: midiSlotsKey), let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) { midiSlots = loaded } else { midiSlots = [MIDIParams(tracked: "Ladybird-1.x")] } }
+    private func saveMIDISlots() { if let data = try? JSONEncoder().encode(midiSlots) { UserDefaults.standard.set(data, forKey: midiSlotsKey) } }
+    private func syncLFOHistoriesToSlots() { if lfoHistories.count < midiSlots.count { lfoHistories.append(contentsOf: Array(repeating: [], count: midiSlots.count - lfoHistories.count)) } else if lfoHistories.count > midiSlots.count { lfoHistories = Array(lfoHistories.prefix(midiSlots.count)) } }
+
+    private func makeLadybirdTrackers(_ sim: GrowingPlantCaterpillarSimulation?) -> [String] {
+        guard let sim = sim else { return ["Ladybird-1.x", "Ladybird-1.y"] }
+        let count = sim.segmentCount(caterpillar: 0) // returns ladybird count when ladybirds present
+        var list: [String] = []
+        for i in 0..<count { let n = i+1; list.append(contentsOf: ["Ladybird-\(n).x", "Ladybird-\(n).y"]) }
+        return list
+    }
+    private func makeLadybirdTrackerColors(_ sim: GrowingPlantCaterpillarSimulation?) -> [String: Color] {
+        guard let sim = sim else { return [:] }
+        let count = sim.segmentCount(caterpillar: 0)
+        var map: [String: Color] = [:]
+        for i in 0..<count { let n = i+1; let c = segmentPalette[i % segmentPalette.count]; map["Ladybird-\(n).x"] = c; map["Ladybird-\(n).y"] = c }
+        return map
+    }
+    private func makeLadybirdTrackerColorNames(_ sim: GrowingPlantCaterpillarSimulation?) -> [String: String] {
+        guard let sim = sim else { return [:] }
+        let count = sim.segmentCount(caterpillar: 0)
+        var map: [String: String] = [:]
+        for i in 0..<count { let n = i+1; map["Ladybird-\(n).x"] = "Ladybird \(n)"; map["Ladybird-\(n).y"] = "Ladybird \(n)" }
+        return map
+    }
+    private func resolveLadybirdTracker(_ tracker: String, in sim: GrowingPlantCaterpillarSimulation, range: ClosedRange<Int>) -> Int? {
+        let parts = tracker.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        guard parts[0].hasPrefix("Ladybird-"), let ladybirdIndex = Int(parts[0].replacingOccurrences(of: "Ladybird-", with: "")), ladybirdIndex >= 1 else { return nil }
+        let index = ladybirdIndex - 1
+        if let proj = sim.projectedFirstCaterpillarSegmentXY127(segment: index) { // maps to ladybird positions
+            let raw = parts[1] == "x" ? proj.x : proj.y
+            return scaleToRange(raw, range: range)
+        }
+        return nil
+    }
+    private func scaleToRange(_ cc: Int, range: ClosedRange<Int>) -> Int { let t = Float(cc)/127.0; let minR = Float(range.lowerBound); let maxR = Float(range.upperBound); let v = Int(round(minR + t * (maxR - minR))); return max(range.lowerBound, min(range.upperBound, v)) }
+    private func coordForTracker(_ tracker: String) -> String { if let dot = tracker.firstIndex(of: ".") { return String(tracker[tracker.index(after: dot)...]) }; return tracker }
+    private func colorForTracker(_ tracker: String) -> Color { if let idxStr = tracker.split(separator: ".").first?.replacingOccurrences(of: "Ladybird-", with: ""), let idx = Int(idxStr), idx>=1, idx<=segmentPalette.count { return segmentPalette[idx-1] } else { return .white } }
+}
+
+#Preview { GrowingPlantCaterpillarLifeformView() }

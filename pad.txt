@@ -1,0 +1,169 @@
+
+import SwiftUI
+import SceneKit
+import UIKit
+import Combine
+
+// ... keep the rest of your file as-is up to body ...
+
+private extension JellyfishLifeformViewAsync {
+    // Fully tear down SceneKit to allow ARC to release the graph
+    func teardownSceneKit() {
+        scnViewRef?.isPlaying = false
+        scnViewRef?.scene?.isPaused = true
+        scnViewRef?.delegate = nil
+        scnViewRef?.scene = nil
+        simRef?.stopAsyncSimulation()
+        simRef = nil
+        scnViewRef = nil
+    }
+}
+
+var body: some View {
+    ModifiedSimulationView<JellyfishSimulationAsync>(
+        config: config,
+        customCameraState: cameraState,
+        createSimulation: createJellyfishSimulation,
+        controlsBuilder: buildControls,
+        onViewReady: { simBinding, scnView in
+            simBinding.wrappedValue?.scnView = scnView
+            scnViewRef = scnView
+            scnView.backgroundColor = .black
+            scnView.isOpaque = true
+            simBinding.wrappedValue?.sceneReference?.background.contents = UIColor.black
+            if isActive { simBinding.wrappedValue?.startAsyncSimulation() }
+        },
+        isActive: isActive,
+        systemScaleGetter: { jellySize },
+        systemScaleSetter: { newScale in
+            let clamped = min(max(newScale, minJellySize), maxJellySize)
+            jellySize = clamped
+            simRef?.setJellySize(clamped)
+        },
+        systemScaleRange: sizeRange,
+        simulationDragHandler: { delta in
+            let factor: Float = 0.02
+            let movementMultiplier: Float = 2.0
+            let right = cameraState.panDirectionVectors().right
+            let horiz = Float(-delta.width) * factor * movementMultiplier
+            simRef?.translate(dx: right.x * horiz, dy: 0, dz: right.z * horiz)
+            let vert = Float(-delta.height) * factor * movementMultiplier
+            simRef?.translate(dx: 0, dy: vert, dz: 0)
+        },
+        enableParallaxPan: false,
+        driveWithSimulationManager: false,
+        pauseHandler: { paused, sim in
+            if paused { sim?.stopAsyncSimulation() } else { sim?.startAsyncSimulation() }
+        },
+        sceneOverlayBuilder: {
+            AnyView(
+                Group {
+                    if displayLFOOutputs, !midiSlots.isEmpty {
+                        let labels = midiSlots.map { coordForTracker($0.tracked) }
+                        let colors = midiSlots.map { colorForTrackerHash($0.tracked) }
+                        LFOOverlayView(labels: labels, histories: lfoHistories, colors: colors, onDoubleTap: { idx in
+                            if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                        })
+                        .padding(.top, 8)
+                        .padding(.horizontal, 8)
+                    }
+                }
+            )
+        }
+    )
+    .preferredColorScheme(.dark)
+    .sheet(isPresented: $showMidiMenu) {
+        let trackers = makeJellyfishTrackers(simRef)
+        MIDIMenuView(
+            slots: $midiSlots,
+            trackers: trackers,
+            focusIndex: $midiFocusIndex,
+            onSend: { slots in
+                guard let sim = simRef else { return }
+                for slot in slots {
+                    guard let value = resolveJellyfishTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: value)
+                }
+            }
+        )
+    }
+    // Keep existing MIDI/LFO onReceive as-is (it already guards with `isActive`)
+    .onChange(of: midiSlots) { _, _ in
+        midiSendCache.lastSentCCValues = midiSendCache.lastSentCCValues.filter { $0.key < midiSlots.count }
+        saveMIDISlots(); syncLFOHistoriesToSlots()
+    }
+    .onReceive(midiClock) { _ in
+        guard isActive, let sim = simRef else { return }
+        if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+        if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+        for (index, slot) in midiSlots.enumerated() {
+            guard let rawCC = resolveJellyfishTrackerRawCC(slot.tracked, in: sim) else { continue }
+            let mapped = scaleToRange(rawCC, range: slot.range)
+            if midiSendCache.lastSentCCValues[index] != mapped {
+                MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: mapped)
+                midiSendCache.lastSentCCValues[index] = mapped
+            }
+            if displayLFOOutputs {
+                let norm = CGFloat(rawCC) / 127.0
+                if lfoHistories.indices.contains(index) {
+                    var h = lfoHistories[index]
+                    h.append(max(0, min(1, norm)))
+                    if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                    lfoHistories[index] = h
+                }
+            }
+        }
+    }
+    .onChange(of: isActive) { _, active in
+        if active {
+            scnViewRef?.isPlaying = true
+            scnViewRef?.scene?.isPaused = false
+            simRef?.startAsyncSimulation()
+        } else {
+            simRef?.stopAsyncSimulation()
+            teardownSceneKit()
+            midiSendCache.lastSentCCValues.removeAll()
+        }
+    }
+    .onChange(of: pulseSpeed) { _, v in simRef?.setPulseSpeed(v) }
+    .onChange(of: rotation) { _, v in simRef?.setRotation(v) }
+    .onAppear {
+        loadMIDISlots(); syncLFOHistoriesToSlots()
+        midiClock = Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()
+        if isActive { simRef?.startAsyncSimulation() }
+    }
+    .onDisappear {
+        simRef?.stopAsyncSimulation()
+        teardownSceneKit()
+        // Do not call midiClock.upstream.connect().cancel() when using autoconnect().
+    }
+}
+
+// File: `universa/SCNViewContainer.swift`
+// Ensure SceneKit is dismantled when SwiftUI removes the UIView.
+import SwiftUI
+import SceneKit
+
+struct SCNViewContainer: UIViewRepresentable {
+    let scene: SCNScene
+    let onSCNViewReady: (SCNView) -> Void
+
+    func makeUIView(context: Context) -> SCNView {
+        let v = SCNView(frame: .zero)
+        v.scene = scene
+        v.isPlaying = true
+        onSCNViewReady(v)
+        return v
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        // No-op
+    }
+
+    static func dismantleUIView(_ uiView: SCNView, coordinator: ()) {
+        uiView.isPlaying = false
+        uiView.scene?.isPaused = true
+        uiView.delegate = nil
+        uiView.scene = nil
+    }
+}

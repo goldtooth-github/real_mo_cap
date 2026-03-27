@@ -1,0 +1,339 @@
+import SwiftUI
+import SceneKit
+import UIKit
+import Combine
+
+// MARK: - MIDI Helper Class
+/// Non-publishing cache for MIDI CC deduplication (used for all lifeforms)
+private final class MIDISendCache { var lastSentCCValues: [Int: Int] = [:] }
+
+// MARK: - MeshBird Lifeform View
+/// Displays a duck flying into the wind, with MIDI and LFO overlays
+struct MeshBirdLifeformView: View {
+    // MARK: - Top-level Properties
+    var isActive: Bool = false
+
+    // MARK: - Control Panel Parameter Ranges & Defaults
+    private let birdRotationRange: ClosedRange<Float> = 0.0...360.0
+    private let birdSizeRange: ClosedRange<Float> = 2.0...10.0
+    private let defaultWingFlapSpeed: Float = 3.0
+    private let defaultBirdRotation: Float = 32.0
+    private let defaultBirdSize: Float = 5.0
+    private let defaultWindIntensity: Float = 0.62
+
+    // MARK: - Simulation Parameters (State)
+    @State private var wingFlapSpeed: Float = 3.0
+    @State private var birdRotation: Float = 32.0
+    @State private var birdSize: Float = 5.0 // pinch-based size
+    @State private var windIntensity: Float = 1.0
+
+    // MARK: - Simulation Reference
+    @State private var meshBirdSimulationRef: MeshBirdSimulation?
+
+    // MARK: - Other State Properties
+    @StateObject private var cameraState = CameraOrbitState()
+    @StateObject private var simulationManager = SimulationManager(updateInterval: 0.016)
+    @State private var showMidiMenu: Bool = false
+    @State private var midiSlots: [MIDIParams] = []
+    private let midiSlotsKey = "MIDI_SLOTS_MESHBIRD"
+    @State private var midiSendCache = MIDISendCache()
+    @State private var midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    @State private var displayLFOOutputs: Bool = false
+    @State private var lfoHistories: [[CGFloat]] = []
+    private let lfoMaxSamples: Int = 160
+    @State private var midiFocusIndex: Int? = nil
+    @State private var scnViewRef: SCNView? = nil
+
+    // MARK: - Config
+    private let config = LifeformViewConfig(
+        initialAzimuth: 0,
+        initialElevation: 20,
+        initialRadius: 12,
+        minRadius: 3,
+        maxRadius: 12,
+        cameraControlMode: .nicks_control,
+        ambientLightIntensity: 0.4,
+        directionalLightIntensity: 0.8,
+        directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0),
+        updateInterval: 0.016,
+        title: "Mallard in Flight",
+        description: "Duck flying into the wind",
+        controlPanelColor: Color.black.opacity(0.6),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.blue.opacity(0.6)
+    )
+    
+    // MARK: - Main View Body
+    var body: some View {
+        ModifiedSimulationView<MeshBirdSimulation>(
+            config: config,
+            customCameraState: cameraState,
+            createSimulation: { scene in
+                // Create and configure simulation
+                let sim = MeshBirdSimulation(scene: scene, scnView: nil)
+                sim.setWingFlapSpeed(wingFlapSpeed)
+                sim.setBirdRotation(birdRotation)
+                sim.setBirdSize(birdSize)
+                sim.setWindIntensity(windIntensity)
+                meshBirdSimulationRef = sim
+                return sim
+            },
+            controlsBuilder: { simBinding in
+                AnyView(
+                    VStack(spacing: 10) {
+                        // Wing Speed
+                        HStack {
+                            Text("Wing Speed").foregroundColor(config.controlTextColor)
+                            Slider(value: $wingFlapSpeed, in: 0.1...6.0)
+                                .onChange(of: wingFlapSpeed) { _, newVal in
+                                    simBinding.wrappedValue?.setWingFlapSpeed(newVal)
+                                }
+                        }
+                        // Bird Rotation
+                        HStack {
+                            Text("Bird Rotation").foregroundColor(config.controlTextColor)
+                            Slider(value: $birdRotation, in: birdRotationRange)
+                            Text(String(format: "%.0f", birdRotation))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        // Wind Intensity
+                        HStack {
+                            Text("Wind Intensity").foregroundColor(config.controlTextColor)
+                            Slider(value: $windIntensity, in: 0...3)
+                                .onChange(of: windIntensity) { _, newVal in
+                                    simBinding.wrappedValue?.setWindIntensity(newVal)
+                                }
+                            Text(String(format: "%.2f", windIntensity))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        // LFO outputs toggle
+                        Toggle("Display LFO outputs", isOn: $displayLFOOutputs)
+                            .toggleStyle(.switch)
+                            .foregroundColor(config.controlTextColor)
+                        // MIDI + Reset
+                        HStack {
+                            Button(action: { showMidiMenu.toggle() }) {
+                                HStack { Image(systemName: "waveform"); Text("MIDI Settings") }
+                                    .foregroundColor(config.controlTextColor)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
+                                    .background(Color.black.opacity(0.4))
+                                    .cornerRadius(8)
+                            }
+                            Button("Reset") {
+                                simBinding.wrappedValue?.reset()
+                                // Reapply defaults
+                                wingFlapSpeed = defaultWingFlapSpeed
+                                birdRotation = defaultBirdRotation
+                                birdSize = defaultBirdSize
+                                windIntensity = defaultWindIntensity
+                                simBinding.wrappedValue?.setWingFlapSpeed(wingFlapSpeed)
+                                simBinding.wrappedValue?.setBirdRotation(birdRotation)
+                                simBinding.wrappedValue?.setBirdSize(birdSize)
+                                simBinding.wrappedValue?.setWindIntensity(windIntensity)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(config.buttonBackgroundColor)
+                            .cornerRadius(8)
+                            .foregroundColor(config.controlTextColor)
+                        }
+                    }.padding(.vertical, 8)
+                )
+            },
+            onViewReady: { simBinding, scnView in
+                // Store SCNView reference for projections
+                if let sim = simBinding.wrappedValue { sim.scnView = scnView }
+                scnViewRef = scnView
+                DispatchQueue.main.async {
+                    meshBirdSimulationRef = simBinding.wrappedValue
+                }
+            },
+            isActive: isActive,
+            systemScaleGetter: { birdSize }, // Pinch scales size
+            systemScaleSetter: { newVal in
+                let clamped = min(max(newVal, birdSizeRange.lowerBound), birdSizeRange.upperBound)
+                birdSize = clamped
+                meshBirdSimulationRef?.setBirdSize(clamped)
+            },
+            systemScaleRange: birdSizeRange,
+            simulationDragHandler: { delta in
+                // Handle drag gestures for camera movement
+                let factor: Float = 0.02
+                let movementMultiplier: Float = 2.0
+                let right = cameraState.panDirectionVectors().right
+                let horiz = Float(-delta.width) * factor * movementMultiplier
+                meshBirdSimulationRef?.translate(dx: right.x * horiz, dy: 0, dz: right.z * horiz)
+                let vert = Float(-delta.height) * factor * movementMultiplier
+                meshBirdSimulationRef?.translate(dx: 0, dy: vert, dz: 0)
+            },
+            enableParallaxPan: false
+        )
+        // MARK: - LFO Overlay
+        .overlay(alignment: .top) {
+            if displayLFOOutputs, !midiSlots.isEmpty {
+                let labels = midiSlots.map { coordForTracker($0.tracked) }
+                let colors = midiSlots.map { colorForTrackerHash($0.tracked) }
+                LFOOverlayView(labels: labels, histories: lfoHistories, colors: colors, onDoubleTap: { idx in
+                    if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                })
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            }
+        }
+        // MARK: - MIDI Settings Sheet
+        .sheet(isPresented: $showMidiMenu) {
+            let trackers = makeMeshBirdTrackers(meshBirdSimulationRef)
+            MIDIMenuView(
+                slots: $midiSlots,
+                trackers: trackers,
+                focusIndex: $midiFocusIndex,
+                onSend: { slots in
+                    guard let sim = meshBirdSimulationRef else { return }
+                    for slot in slots {
+                        guard let value = resolveMeshBirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                        MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: value)
+                    }
+                }
+            )
+        }
+        .preferredColorScheme(.dark)
+        // MARK: - Event Handlers
+        .onAppear {
+            loadMIDISlots()
+            syncLFOHistoriesToSlots()
+            simulationManager.isActive = isActive // Always activate simulation on appear
+            midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect() // Restart MIDI clock
+        }
+        .onDisappear {
+            simulationManager.isActive = false // Deactivate simulation on disappear
+            midiClock.upstream.connect().cancel() // Cancel MIDI clock
+        }
+        .onChange(of: isActive) { _, newVal in
+            DispatchQueue.main.async { simulationManager.isActive = newVal }
+        }
+        .onChange(of: midiSlots) { _, _ in
+            midiSendCache.lastSentCCValues = midiSendCache.lastSentCCValues.filter { $0.key < midiSlots.count }
+            saveMIDISlots(); syncLFOHistoriesToSlots()
+        }
+        .onReceive(midiClock) { _ in
+            guard isActive, let sim = meshBirdSimulationRef else { return }
+            if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+            if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+            for (index, slot) in midiSlots.enumerated() {
+                guard let ccVal = resolveMeshBirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                if midiSendCache.lastSentCCValues[index] != ccVal {
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: ccVal)
+                    midiSendCache.lastSentCCValues[index] = ccVal
+                }
+                let norm = CGFloat(max(0, min(127, ccVal))) / 127.0
+                if lfoHistories.indices.contains(index) {
+                    var h = lfoHistories[index]
+                    h.append(norm)
+                    if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                    lfoHistories[index] = h
+                }
+            }
+        }
+        .onChange(of: birdRotation) { _, newVal in
+            meshBirdSimulationRef?.setBirdRotation(newVal)
+        }
+        .onChange(of: birdSize) { _, newVal in
+            meshBirdSimulationRef?.setBirdSize(newVal)
+        }
+        .onChange(of: windIntensity) { _, newVal in
+            meshBirdSimulationRef?.setWindIntensity(newVal)
+        }
+    }
+    
+    // MARK: - Helper Functions
+    /// Load MIDI slots from UserDefaults
+    private func loadMIDISlots() {
+        if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
+           let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) {
+            midiSlots = loaded
+        } else {
+            midiSlots = [MIDIParams(tracked: "head.x")]
+        }
+    }
+    /// Save MIDI slots to UserDefaults
+    private func saveMIDISlots() {
+        if let data = try? JSONEncoder().encode(midiSlots) {
+            UserDefaults.standard.set(data, forKey: midiSlotsKey)
+        }
+    }
+    /// Ensure lfoHistories matches midiSlots count
+    private func syncLFOHistoriesToSlots() {
+        if lfoHistories.count < midiSlots.count {
+            lfoHistories.append(contentsOf: Array(repeating: [], count: midiSlots.count - lfoHistories.count))
+        } else if lfoHistories.count > midiSlots.count {
+            lfoHistories = Array(lfoHistories.prefix(midiSlots.count))
+        }
+    }
+    /// Return all coordinate trackers for mesh bird joints
+    private func makeMeshBirdTrackers(_ sim: MeshBirdSimulation?) -> [String] {
+        guard let sim = sim else { return ["head.x", "head.y"] }
+        var names: [String] = []
+        for j in sim.trackerNames() {
+            names.append(contentsOf: ["\(j).x", "\(j).y", "\(j).z"])
+        }
+        return names
+    }
+    /// Resolve tracker value from simulation (screen-space or world position)
+    private func resolveMeshBirdTracker(_ tracker: String, in sim: MeshBirdSimulation, range: ClosedRange<Int>) -> Int? {
+        let parts = tracker.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        let joint = parts[0]
+        let comp = parts[1]
+        // Try screen-space projection for x/y first
+        if comp == "x" || comp == "y" {
+            if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+            if let proj = sim.projectedJointXY127(jointName: joint) {
+                let rawVal = comp == "x" ? proj.x : proj.y
+                return scaleToRange(rawVal, range: range)
+            }
+        }
+        // Fallback to world position normalization
+        guard let wp = sim.jointWorldPosition(joint) else { return nil }
+        let vb = sim.visualBounds
+        let raw: Float
+        switch comp {
+        case "x": raw = wp.x
+        case "y": raw = wp.y
+        case "z": raw = wp.z
+        default: return nil
+        }
+        let cc = normalizeToCC(raw: raw, minVal: -vb, maxVal: vb)
+        return scaleToRange(cc, range: range)
+    }
+    // MARK: - MIDI / LFO helper mapping functions
+    /// Normalize raw value to MIDI CC (0-127)
+    private func normalizeToCC(raw: Float, minVal: Float, maxVal: Float) -> Int {
+        guard maxVal > minVal else { return 0 }
+        let clamped = max(min(raw, maxVal), minVal)
+        let t = (clamped - minVal) / (maxVal - minVal)
+        let value = Int(round(t * 127))
+        return max(0, min(127, value))
+    }
+    /// Scale MIDI CC to custom range
+    private func scaleToRange(_ cc: Int, range: ClosedRange<Int>) -> Int {
+        let t = Float(cc) / 127.0
+        let minR = Float(range.lowerBound)
+        let maxR = Float(range.upperBound)
+        let v = Int(round(minR + t * (maxR - minR)))
+        return max(range.lowerBound, min(range.upperBound, v))
+    }
+    /// Extract coordinate name from tracker string
+    private func coordForTracker(_ tracker: String) -> String {
+        if let dot = tracker.firstIndex(of: ".") { return String(tracker[tracker.index(after: dot)...]) }
+        return tracker
+    }
+    /// Generate color for tracker string
+    private func colorForTrackerHash(_ tracker: String) -> Color {
+        var hasher = Hasher(); hasher.combine(tracker)
+        let h = Double(abs(hasher.finalize()) % 360) / 360.0
+        return Color(hue: h, saturation: 0.7, brightness: 0.9)
+    }
+}

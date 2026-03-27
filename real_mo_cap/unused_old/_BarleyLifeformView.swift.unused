@@ -1,0 +1,198 @@
+// filepath: /Users/nick/Desktop/lifeform/dumbmachine/universa/universa/BarleyLifeformView.swift
+import SwiftUI
+import SceneKit
+
+struct BarleyLifeformView: View {
+    // Control whether this view is currently active in the page view
+    var isActive: Bool = false
+    
+    // Control wind parameters
+    @State private var windStrength: Float = 1.0
+    
+    var body: some View {
+        TimerControlledBarleyView(
+            config: config,
+            windStrength: $windStrength,
+            isActive: isActive
+        )
+        .preferredColorScheme(.dark) // Dark mode for better visibility
+    }
+    
+    // Configuration for barley field simulation
+    private let config = LifeformViewConfig(
+        // Camera parameters
+        initialAzimuth: 0,
+        initialElevation: 5,
+        initialRadius: 2,
+        minRadius: 2,
+        maxRadius: 4,
+        cameraControlMode: .fullControl,
+        
+        // Lighting parameters
+        ambientLightIntensity: 0.5,
+        directionalLightIntensity: 0.8,
+        directionalLightAngles: SCNVector3(x: -Float.pi/3, y: Float.pi/4, z: 0),
+        
+        // Simulation parameters
+        updateInterval: 0.016,
+        
+        // UI parameters
+        title: "Barley Field Simulation",
+        description: "Watch the barley stalks sway in the wind",
+        controlPanelColor: Color.black.opacity(0.6),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.blue.opacity(0.6)
+    )
+    
+    // Add a floor plane to represent the ground
+    private func addFloor(to scene: SCNScene) {
+        let visualBounds: Float = 10 // Using a fixed value for the floor size
+        
+        // Create a plane for the ground
+        let floor = SCNPlane(
+            width: CGFloat(visualBounds),
+            height: CGFloat(visualBounds)
+        )
+        
+        // Green/brown gradient texture for ground
+        floor.firstMaterial?.diffuse.contents = UIColor(red: 0.2, green: 0.3, blue: 0.1, alpha: 1.0)
+        
+        // Create floor node
+        let floorNode = SCNNode(geometry: floor)
+        
+        // Rotate to be horizontal and position at bottom of cube
+        floorNode.eulerAngles.x = -.pi / 2 // Rotate to be horizontal
+        floorNode.position = SCNVector3(
+            visualBounds/2,
+            0,
+            visualBounds/2
+        )
+        
+        scene.rootNode.addChildNode(floorNode)
+    }
+}
+
+// Extracted view that handles timer control specifically for barley
+struct TimerControlledBarleyView: View {
+    // Configuration
+    var config: LifeformViewConfig
+    
+    // Wind strength binding
+    @Binding var windStrength: Float
+    
+    // Active state
+    var isActive: Bool
+    
+    // Store simulation reference
+    @State private var simulation: BarleySimulation?
+    
+    // Store timer reference
+    @State private var simulationTimer: Timer?
+    
+    var body: some View {
+        GenericLifeformView<BarleySimulation>(
+            config: config,
+            createSimulation: { scene in
+                // Create floor for the barley field
+                addFloor(to: scene)
+                
+                // Create barley simulation
+                let barleySimulation = BarleySimulation(stalkCount: 40, scene: scene)
+                barleySimulation.userWindStrength = windStrength
+                
+                // Store simulation reference
+                self.simulation = barleySimulation
+                
+                return barleySimulation
+            },
+            controlsBuilder: { simulationBinding in
+                AnyView(
+                    HStack {
+                        Text("Wind:")
+                            .foregroundColor(config.controlTextColor)
+                        
+                        Slider(value: $windStrength, in: 0...2)
+                            .onChange(of: windStrength) { newValue in
+                                // Update wind strength when slider changes
+                                if let simulation = simulationBinding.wrappedValue {
+                                    simulation.setWindStrength(newValue)
+                                }
+                            }
+                    }
+                    .padding(.vertical, 8)
+                )
+            }
+        )
+        .onChange(of: isActive) { newIsActive in
+            if newIsActive {
+                // Start the timer when this view becomes active
+                startSimulationTimer()
+            } else {
+                // Stop the timer when this view becomes inactive
+                simulationTimer?.invalidate()
+                simulationTimer = nil
+            }
+        }
+        .onAppear {
+            // Only start the timer on appear if this view is active
+            if isActive && simulationTimer == nil {
+                startSimulationTimer()
+            }
+        }
+        .onDisappear {
+            // Always stop the timer when the view disappears
+            simulationTimer?.invalidate()
+            simulationTimer = nil
+        }
+    }
+    
+    // Function to start the simulation timer
+    private func startSimulationTimer() {
+        // Stop any existing timer first
+        simulationTimer?.invalidate()
+        
+        // Create a new timer and store it
+        guard let sim = simulation else { return }
+        
+        let timer = Timer(timeInterval: config.updateInterval, repeats: true) { _ in
+            sim.update(deltaTime: Float(config.updateInterval))
+        }
+        
+        // Store reference to timer
+        simulationTimer = timer
+        
+        // Add to run loop
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    
+    // Add a floor plane to represent the ground
+    private func addFloor(to scene: SCNScene) {
+        let visualBounds: Float = 10 // Using a fixed value for the floor size
+        
+        // Create a plane for the ground
+        let floor = SCNPlane(
+            width: CGFloat(visualBounds),
+            height: CGFloat(visualBounds)
+        )
+        
+        // Green/brown gradient texture for ground
+        floor.firstMaterial?.diffuse.contents = UIColor(red: 0.2, green: 0.3, blue: 0.1, alpha: 1.0)
+        
+        // Create floor node
+        let floorNode = SCNNode(geometry: floor)
+        
+        // Rotate to be horizontal and position at bottom of cube
+        floorNode.eulerAngles.x = -.pi / 2 // Rotate to be horizontal
+        floorNode.position = SCNVector3(
+            visualBounds/2,
+            0,
+            visualBounds/2
+        )
+        
+        scene.rootNode.addChildNode(floorNode)
+    }
+}
+
+#Preview {
+    BarleyLifeformView(isActive: true)
+}

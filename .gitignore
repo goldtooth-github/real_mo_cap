@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode / Swift
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+
+# Build artifacts
+build/
+*.log
+
+# Local-only or nested repos
+LFO_DRAWING/
+NEWBOI.git/
+pooppoop.xcodeproj/
+
+# User state
+universa.xcodeproj/project.xcworkspace/xcuserdata/
+universa.xcodeproj/xcuserdata/

@@ -1,0 +1,491 @@
+import SceneKit
+import UIKit
+import Foundation
+import QuartzCore
+
+// MARK: - MeshBirdSimulation (synchronous core) mirrors JellyfishSimulation layout/sequence
+class MeshBirdSimulation: LifeformSimulation {
+    // MARK: - Scene refs
+    weak var sceneRef: SCNScene?
+    weak var scnView: SCNView?
+    private let rootNode = SCNNode()
+    
+    // MARK: - Rig containers
+    private var jointPositions: [String: SCNVector3] = [:]
+    private var baseJointPositions: [String: SCNVector3] = [:]
+    private var jointNodes: [String: SCNNode] = [:]
+    private var splineNodes: [String: SCNNode] = [:]
+    private var ambientLightNode: SCNNode?
+    private var directionalLightNode: SCNNode?
+    
+    // MARK: - Parameters (animation & control)
+    private var time: Float = 0.0
+    private var wingFlapSpeed: Float = 3.0
+    private var birdSize: Float = 5.0
+    private let rigBaseSize: Float = 5.0
+    private var birdRotation: Float = 0.0
+    private var userOffset: SCNVector3 = .zero
+    private var windIntensity: Float = 1.0
+    
+    // Motion smoothing
+    private let avgSmoothing: Float = 0.02
+    private let centerPosition: SCNVector3 = .zero
+    private var avgFlapModulation: Float = 1.0
+    
+    // MARK: - Visual bounds (normalization like Jellyfish)
+    var visualBounds: Float { 30.0 }
+    
+    // MARK: - Colors & structural data
+    private let colors: [String: UIColor] = [
+        "body": .brown,
+        "lowerBack": .gray,
+        "upperBack": .systemTeal,
+        "head": UIColor(red: 0.1, green: 0.4, blue: 0.1, alpha: 1.0),
+        "neck": .brown,
+        "tail": .darkGray,
+        "tailTip": .darkGray,
+        "leftWingShoulder": .lightGray,
+        "leftWingMid": .lightGray,
+        "leftWingTip": .white,
+        "rightWingShoulder": .lightGray,
+        "rightWingMid": .lightGray,
+        "rightWingTip": .white,
+        "beakBase": .orange,
+        "beakTip": .yellow,
+        "rightWingBack2": .purple,
+        "leftWingBack2": .purple
+    ]
+    private let joints = [
+        "body", "lowerBack", "upperBack", "head", "neck", "tail", "tailTip",
+        "leftWingShoulder", "leftWingMid", "leftWingTip",
+        "leftWingBack1", "leftWingBack2", "leftWingBack3",
+        "rightWingShoulder", "rightWingMid", "rightWingTip",
+        "rightWingBack1", "rightWingBack2", "rightWingBack3",
+        "beakBase", "beakTip",
+        "underneck1", "underneck2",
+        "bodyUnder1", "bodyUnder2",
+        "lowerBackUnder1", "lowerBackUnder2"
+    ]
+    private let splines = [
+        ("body", "lowerBack"), ("lowerBack", "tail"), ("tail", "tailTip"),
+        ("body", "upperBack"), ("upperBack", "neck"), ("neck", "head"), ("head", "beakBase"), ("beakBase", "beakTip"),
+        ("bodyUnder2", "leftWingShoulder"), ("leftWingShoulder", "leftWingMid"), ("leftWingMid", "leftWingTip"),
+        ("leftWingShoulder", "leftWingBack1"), ("leftWingBack1", "leftWingBack2"), ("leftWingBack2", "leftWingBack3"), ("leftWingTip", "leftWingBack3"),
+        ("bodyUnder1", "rightWingShoulder"), ("rightWingShoulder", "rightWingMid"), ("rightWingMid", "rightWingTip"),
+        ("rightWingMid", "rightWingBack3"), ("leftWingMid", "leftWingBack3"), ("rightWingMid", "rightWingBack2"), ("leftWingMid", "leftWingBack2"),
+        ("rightWingShoulder", "rightWingBack1"), ("rightWingBack1", "rightWingBack2"), ("rightWingBack2", "rightWingBack3"), ("rightWingTip", "rightWingBack3"),
+        ("leftWingBack1", "lowerBack"), ("rightWingBack1", "lowerBack"), ("body","rightWingShoulder"), ("body","leftWingShoulder"),
+        ("neck","rightWingShoulder"), ("neck","leftWingShoulder"),
+        ("underneck1", "neck"), ("underneck2", "neck"), ("underneck1", "head"), ("underneck2", "head"),
+        ("underneck1", "underneck2"), ("underneck1", "bodyUnder1"), ("underneck2", "bodyUnder2"), ("bodyUnder1", "bodyUnder2"),
+        ("bodyUnder1", "lowerBackUnder1"), ("bodyUnder2", "lowerBackUnder2"), ("body", "bodyUnder1"), ("body", "bodyUnder2"),
+        ("lowerBack", "lowerBackUnder1"), ("lowerBack", "lowerBackUnder2"), ("tail", "lowerBackUnder1"), ("tail", "lowerBackUnder2")
+    ]
+    
+    // MARK: - Init
+    init(scene: SCNScene, scnView: SCNView?) {
+        self.sceneRef = scene
+        self.scnView = scnView
+        scene.rootNode.addChildNode(rootNode)
+        setupBird()
+    }
+    
+    // MARK: - Build / Reset
+    private func setupBird() {
+        rootNode.removeAllActions()
+        rootNode.enumerateChildNodes { n, _ in n.removeFromParentNode() }
+        jointNodes.removeAll(); splineNodes.removeAll()
+        ambientLightNode?.removeFromParentNode(); directionalLightNode?.removeFromParentNode()
+        ambientLightNode = nil; directionalLightNode = nil
+        let s = rigBaseSize
+        rootNode.position = .zero
+        jointPositions = [
+            "body": SCNVector3(0, 0, 0),
+            "lowerBack": SCNVector3(0, 0, -s * 0.15),
+            "upperBack": SCNVector3(0, s * 0.025, s * 0.125),
+            "neck": SCNVector3(0, s * 0.05, s * 0.25),
+            "head": SCNVector3(0, s * 0.08, s * 0.45),
+            "beakBase": SCNVector3(0, s * 0.08, s * 0.55),
+            "beakTip": SCNVector3(0, s * 0.05, s * 0.65),
+            "tail": SCNVector3(0, s * 0.0, -s * 0.3),
+            "tailTip": SCNVector3(0, s * 0.0, -s * 0.5),
+            "leftWingShoulder": SCNVector3(-s * 0.4, 0, 0),
+            "leftWingMid": SCNVector3(-s * 0.5, 0, 0),
+            "leftWingTip": SCNVector3(-s * 0.7, 0, 0),
+            "leftWingBack1": SCNVector3(-s * 0.3, -s * 0.05, -s * 0.1),
+            "leftWingBack2": SCNVector3(-s * 0.5, -s * 0.08, -s * 0.15),
+            "leftWingBack3": SCNVector3(-s * 0.65, -s * 0.12, -s * 0.18),
+            "rightWingShoulder": SCNVector3(s * 0.4, 0, 0),
+            "rightWingMid": SCNVector3(s * 0.5, 0, 0),
+            "rightWingTip": SCNVector3(s * 0.7, 0, 0),
+            "rightWingBack1": SCNVector3(s * 0.3, -s * 0.05, -s * 0.1),
+            "rightWingBack2": SCNVector3(s * 0.5, -s * 0.08, -s * 0.15),
+            "rightWingBack3": SCNVector3(s * 0.65, -s * 0.12, -s * 0.18),
+            "bodyUnder1": SCNVector3(0.10 * s, -0.14 * s, 0),
+            "bodyUnder2": SCNVector3(-0.10 * s, -0.14 * s, 0),
+            "lowerBackUnder1": SCNVector3(0.08 * s, -0.1 * s, -0.15 * s),
+            "lowerBackUnder2": SCNVector3(-0.08 * s, -0.1 * s, -0.15 * s),
+            "underneck1": SCNVector3(0.25, s * -0.08, s * 0.2),
+            "underneck2": SCNVector3(-0.25, s * -0.08, s * 0.2)
+        ]
+        baseJointPositions = jointPositions
+        createJointNodes(scale: s)
+        createSplineBones(scale: s)
+        applySizeScale()
+        addLights()
+    }
+    func reset() {
+        time = 0
+        userOffset = .zero
+        avgFlapModulation = 1.0
+        // Reset heartbeat state
+        heartbeatTime = 0
+        elapsedSinceBeat = 0
+        beatIntervals.removeAll()
+        heartbeat = false
+        heartbeatLatched = false
+        heartbeatLatchTicks = 0
+        if let _ = sceneRef { setupBird() }
+    }
+    // MARK: - Geometry helpers
+    private func makeUnlitMaterial(_ color: UIColor) -> SCNMaterial {
+        let m = SCNMaterial()
+        m.diffuse.contents = color
+        m.isDoubleSided = false
+        m.writesToDepthBuffer = true
+        m.readsFromDepthBuffer = true
+        m.blendMode = .alpha
+        m.metalness.contents = 0.0
+        m.roughness.contents = 1.0
+        return m
+    }
+    private func createCylinderBetween(from: SCNVector3, to: SCNVector3, radius: Float) -> SCNNode {
+        let dir = (to - from)
+        let height = dir.length()
+        if DebugToggles.useUnitHeightScalingForSplines {
+            let cylinder = SCNCylinder(radius: CGFloat(radius), height: 1.0)
+            cylinder.radialSegmentCount = 8
+            cylinder.heightSegmentCount = 1
+            cylinder.firstMaterial = makeUnlitMaterial(UIColor(white: 0.7, alpha: 1.0))
+            let node = SCNNode(geometry: cylinder)
+            node.simdPosition = SIMD3<Float>(from.x, from.y, from.z)
+            node.pivot = SCNMatrix4MakeTranslation(0, Float(-0.5), 0)
+            node.simdScale = SIMD3<Float>(1, height, 1)
+            let direction = dir.normalized()
+            if !direction.isZeroVector {
+                let yAxis = SCNVector3(0, 1, 0)
+                let rotationAxis = SCNVector3.cross(yAxis, direction)
+                if !rotationAxis.isZeroVector {
+                    let angle = acos(SCNVector3.dot(yAxis, direction))
+                    node.rotation = SCNVector4(rotationAxis.x, rotationAxis.y, rotationAxis.z, angle)
+                }
+            }
+            return node
+        } else {
+            let cylinder = SCNCylinder(radius: CGFloat(radius), height: CGFloat(height))
+            cylinder.radialSegmentCount = 8
+            cylinder.heightSegmentCount = 1
+            cylinder.firstMaterial = makeUnlitMaterial(UIColor(white: 0.7, alpha: 1.0))
+            let node = SCNNode(geometry: cylinder)
+            node.position = from
+            node.pivot = SCNMatrix4MakeTranslation(0, -Float(height/2), 0)
+            let direction = dir.normalized()
+            if !direction.isZeroVector {
+                let yAxis = SCNVector3(0, 1, 0)
+                let rotationAxis = SCNVector3.cross(yAxis, direction)
+                if !rotationAxis.isZeroVector {
+                    let angle = acos(SCNVector3.dot(yAxis, direction))
+                    node.rotation = SCNVector4(rotationAxis.x, rotationAxis.y, rotationAxis.z, angle)
+                }
+            }
+            return node
+        }
+    }
+    private func createJointNodes(scale s: Float) {
+        for (name, pos) in jointPositions {
+            let node = SCNNode()
+            let radius: CGFloat = {
+                switch name {
+                case "body": return CGFloat(0.12 * s)
+                case "head", "upperBack", "lowerBack": return CGFloat(0.09 * s)
+                case "tailTip", "leftWingTip", "rightWingTip": return CGFloat(0.04 * s)
+                case "beakBase": return CGFloat(0.03 * s)
+                case "beakTip": return CGFloat(0.02 * s)
+                default: return CGFloat(0.04 * s)
+                }
+            }()
+            let sphere = SCNSphere(radius: radius)
+            sphere.segmentCount = 12
+            sphere.firstMaterial = makeUnlitMaterial(colors[name] ?? .gray)
+            node.geometry = sphere
+            node.position = pos
+            jointNodes[name] = node
+            rootNode.addChildNode(node)
+        }
+    }
+    private func createSplineBones(scale s: Float) {
+        for (a, b) in splines {
+            guard let pa = jointPositions[a], let pb = jointPositions[b] else { continue }
+            let thickness: Float
+            if a.contains("beak") || b.contains("beak") { thickness = 0.015 * s }
+            else if a == "body" || b == "body" { thickness = 0.03 * s }
+            else { thickness = 0.02 * s }
+            let node = createCylinderBetween(from: pa, to: pb, radius: thickness)
+            splineNodes["\(a)_\(b)"] = node
+            rootNode.addChildNode(node)
+        }
+    }
+    private func addLights() {
+        guard let scene = sceneRef else { return }
+        let ambient = SCNNode()
+        ambient.light = SCNLight()
+        ambient.light?.type = .ambient
+        ambient.light?.color = UIColor(white: 0.6, alpha: 1.0)
+        scene.rootNode.addChildNode(ambient)
+        ambientLightNode = ambient
+        let dir = SCNNode()
+        dir.light = SCNLight()
+        dir.light?.type = .directional
+        dir.light?.color = UIColor(white: 0.8, alpha: 1.0)
+        dir.position = SCNVector3(5,5,5)
+        dir.eulerAngles = SCNVector3(-Float.pi/4, Float.pi/4, 0)
+        scene.rootNode.addChildNode(dir)
+        directionalLightNode = dir
+    }
+    
+    // MARK: - Control setters (mirrors Jellyfish style)
+    func setWingFlapSpeed(_ v: Float) { wingFlapSpeed = max(0.1, min(v, 6.0)) }
+    func setBirdRotation(_ v: Float) { birdRotation = v; rootNode.eulerAngles.y = v * (.pi / 180) }
+    func setBirdSize(_ v: Float) { birdSize = v; applySizeScale() }
+    func setWindIntensity(_ v: Float) { windIntensity = max(0, v) }
+    func translate(dx: Float, dy: Float, dz: Float) { userOffset += SCNVector3(dx, dy, dz) }
+    private func applySizeScale() { let scale = max(0.1, birdSize / rigBaseSize); rootNode.scale = SCNVector3(scale, scale, scale) }
+    
+    // MARK: - Tracker API (parallels Jellyfish trackerNames / worldPosition)
+    func trackerNames() -> [String] {
+        var names = Array(jointPositions.keys)
+        names.append("heartbeat") // Add heartbeat as a virtual tracker
+        return names
+    }
+    func jointWorldPosition(_ name: String) -> SCNVector3? {
+        if name == "heartbeat" { return nil } // Not a spatial tracker
+        if let node = jointNodes[name] { return node.worldPosition }
+        if let local = jointPositions[name] { return local.applyingMatrix(rootNode.worldTransform) }
+        return nil
+    }
+    func projectedJointXY127(jointName: String) -> (x: Int, y: Int)? {
+        guard let scnView = scnView, let world = jointWorldPosition(jointName) else { return nil }
+        let projected = scnView.projectPoint(world)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let nx = max(0.0, min(1.0, CGFloat(projected.x) / w))
+        let ny = max(0.0, min(1.0, 1.0 - CGFloat(projected.y) / h))
+        return (x: Int(round(nx * 127.0)), y: Int(round(ny * 127.0)))
+    }
+    
+    // MARK: - Pause support (scene graph freeze like Jellyfish)
+    func setSceneGraphPaused(_ paused: Bool) {
+        rootNode.isPaused = paused
+        rootNode.enumerateChildNodes { node, _ in node.isPaused = paused }
+    }
+    
+    // MARK: - Update loop (core simulation)
+    func update(deltaTime dt: Float) {
+        if DebugToggles.disableImplicitAnimations { SCNTransaction.begin(); SCNTransaction.animationDuration = 0; CATransaction.setDisableActions(true) }
+        defer { if DebugToggles.disableImplicitAnimations { SCNTransaction.commit() } }
+        let modulation = 0.95 + 0.05 * sin(time * 1.1)
+        avgFlapModulation += (modulation - avgFlapModulation) * avgSmoothing
+        let effectiveSpeed = max(0.0, wingFlapSpeed * modulation)
+        time += dt * effectiveSpeed
+        let s = rigBaseSize
+        // Wind drift
+        let windTime = time * 0.2
+        let windX = sin(windTime) * s * 0.2 * windIntensity
+        let windY = cos(windTime * 0.7) * s * 0.15 * windIntensity
+        let surge = ((avgFlapModulation - 0.975) / 0.025) * s * 0.12 * windIntensity
+        var newPos = SCNVector3(centerPosition.x + windX, centerPosition.y + windY, centerPosition.z + surge)
+        let maxOffset = s * 0.4 * max(1.0, windIntensity)
+        newPos.x = max(-maxOffset, min(maxOffset, newPos.x))
+        newPos.y = max(-maxOffset, min(maxOffset, newPos.y))
+        newPos.z = max(-maxOffset, min(maxOffset, newPos.z))
+        rootNode.simdPosition = SIMD3<Float>(newPos.x + userOffset.x, newPos.y + userOffset.y, newPos.z + userOffset.z)
+        // --- Heartbeat update (BPM + pulse latching) ---
+        updateHeartbeatInterval()
+        elapsedSinceBeat += dt
+        heartbeatTime += dt
+        heartbeat = false
+        if heartbeatTime >= heartbeatInterval {
+            heartbeatTime -= heartbeatInterval
+            heartbeat = true
+            // Record actual elapsed interval and update average BPM
+            let measured = max(elapsedSinceBeat, 1e-4)
+            elapsedSinceBeat = 0
+            beatIntervals.append(measured)
+            if beatIntervals.count > beatAvgCount { beatIntervals.removeFirst(beatIntervals.count - beatAvgCount) }
+            // Compute average over collected intervals
+            var sum: Float = 0
+            for iv in beatIntervals { sum += iv }
+            let avgInterval = sum / Float(beatIntervals.count)
+            heartbeatBPM = 60.0 / max(avgInterval, 1e-4)
+            // Set latched ticks based on current dt so duration ~heartbeatLatchSeconds
+            let ticks = Int(ceil(heartbeatLatchSeconds / max(dt, 1e-4)))
+            heartbeatLatchTicks = max(2, ticks)
+        }
+        heartbeatLatched = heartbeatLatchTicks > 0
+        if heartbeatLatchTicks > 0 { heartbeatLatchTicks -= 1 }
+        // --- End heartbeat update ---
+        // --- Rotation modulation synced with wind ---
+        let baseRotation = birdRotation
+        let rotationAmplitude: Float = 48.0 // degrees, adjust for subtlety
+        let rotationOffset: Float = rotationAmplitude * sin(windTime * 0.05) // long wavelength
+        let modulatedRotation = baseRotation + rotationOffset
+        rootNode.eulerAngles.y = modulatedRotation * (.pi / 180)
+        // --- End rotation modulation ---
+        // Core animation (mirrors original implementation)
+        let flapAngle = sin(time * 3.0)
+        let shoulderFlap = flapAngle * s * 0.15
+        let midFlap = flapAngle * s * 0.25
+        let tipTuck = (1 - max(0, flapAngle)) * s * 0.10
+        let tipFlap = flapAngle * s * 0.3
+        jointPositions["leftWingTip"] = SCNVector3(-s * 0.7 + tipTuck, tipFlap * 1.6, 0)
+        jointPositions["rightWingTip"] = SCNVector3(s * 0.7 - tipTuck, tipFlap * 1.6, 0)
+        jointPositions["leftWingShoulder"] = SCNVector3(-s * 0.2, shoulderFlap, 0)
+        jointPositions["leftWingMid"] = SCNVector3(-s * 0.4, midFlap * 1.3, 0)
+        jointPositions["rightWingShoulder"] = SCNVector3(s * 0.2, shoulderFlap, 0)
+        jointPositions["rightWingMid"] = SCNVector3(s * 0.4, midFlap * 1.3, 0)
+        jointPositions["body"] = SCNVector3(0, midFlap * 0.05, 0)
+        jointPositions["leftWingBack1"] = SCNVector3(-s * 0.3, shoulderFlap * 0.7, -s * 0.1)
+        jointPositions["leftWingBack2"] = SCNVector3(-s * 0.5, midFlap * 0.8, -s * 0.15)
+        jointPositions["leftWingBack3"] = SCNVector3(-s * 0.65, tipFlap * 1.0, -s * 0.18)
+        jointPositions["rightWingBack1"] = SCNVector3(s * 0.3, shoulderFlap * 0.7, -s * 0.1)
+        jointPositions["rightWingBack2"] = SCNVector3(s * 0.5, midFlap * 0.8, -s * 0.15)
+        jointPositions["rightWingBack3"] = SCNVector3(s * 0.65, tipFlap * 1.0, -s * 0.18)
+        let headPhase = -flapAngle
+        let headBobVertical = headPhase * s * 0.03
+        let headBobHorizontal = headPhase * s * 0.05
+        jointPositions["neck"] = SCNVector3(0, s * 0.05 - headBobVertical * 0.5, s * 0.25 + headBobHorizontal * 0.5)
+        jointPositions["head"] = SCNVector3(0, s * 0.08 - headBobVertical, s * 0.45 + headBobHorizontal)
+        jointPositions["beakBase"] = SCNVector3(0, s * 0.08 - headBobVertical, s * 0.55 + headBobHorizontal)
+        jointPositions["beakTip"] = SCNVector3(0, s * 0.05 - headBobVertical, s * 0.65 + headBobHorizontal)
+        jointPositions["bodyUnder1"] = SCNVector3(0.1 * s, -0.14 * s, 0 + headBobHorizontal)
+        jointPositions["bodyUnder2"] = SCNVector3(-0.1 * s, -0.14 * s, 0 + headBobHorizontal)
+        let tailExtension = -flapAngle * s * 0.05
+        jointPositions["tail"] = SCNVector3(0, tailExtension * 0.4, -s * 0.3)
+        jointPositions["tailTip"] = SCNVector3(0, tailExtension * 0.9, -s * 0.5 - tailExtension * 0.2)
+        // Apply joint node positions
+        if DebugToggles.onlyUpdateWhenChanged {
+            let posEps: Float = 1e-4
+            for (name, node) in jointNodes {
+                if let target = jointPositions[name], !node.position.almostEquals(target, epsilon: posEps) {
+                    node.simdPosition = SIMD3<Float>(target.x, target.y, target.z)
+                }
+            }
+        } else {
+            for (name, node) in jointNodes { if let target = jointPositions[name] { node.simdPosition = SIMD3<Float>(target.x, target.y, target.z) } }
+        }
+        // Update splines
+        let heightEps: CGFloat = 1e-4
+        let scaleEps: Float = 1e-4
+        let rotEps: Float = 1e-4
+        for (key, node) in splineNodes {
+            let parts = key.split(separator: "_")
+            guard parts.count == 2,
+                  let a = jointPositions[String(parts[0])],
+                  let b = jointPositions[String(parts[1])] else { continue }
+            let dir = b - a
+            let height = dir.length()
+            if DebugToggles.onlyUpdateWhenChanged {
+                if !node.position.almostEquals(a, epsilon: 1e-4) { node.simdPosition = SIMD3<Float>(a.x, a.y, a.z) }
+            } else { node.simdPosition = SIMD3<Float>(a.x, a.y, a.z) }
+            let direction = dir.normalized()
+            if !direction.isZeroVector {
+                let yAxis = SCNVector3(0,1,0)
+                let axis = SCNVector3.cross(yAxis, direction)
+                if !axis.isZeroVector {
+                    let angle = acos(SCNVector3.dot(yAxis, direction))
+                    if DebugToggles.onlyUpdateWhenChanged {
+                        let curr = node.rotation
+                        let currAxis = SCNVector3(curr.x, curr.y, curr.z)
+                        let axisChanged = !currAxis.almostEquals(axis, epsilon: rotEps)
+                        let angleChanged = abs(curr.w - angle) > rotEps
+                        if axisChanged || angleChanged { node.rotation = SCNVector4(axis.x, axis.y, axis.z, angle) }
+                    } else { node.rotation = SCNVector4(axis.x, axis.y, axis.z, angle) }
+                }
+            }
+            if let cyl = node.geometry as? SCNCylinder {
+                if DebugToggles.useUnitHeightScalingForSplines {
+                    if abs(cyl.height - 1.0) > 1e-6 { cyl.height = 1.0 }
+                    node.pivot = SCNMatrix4MakeTranslation(0, Float(-0.5), 0)
+                    let currentScale = node.simdScale
+                    if DebugToggles.onlyUpdateWhenChanged { if abs(currentScale.y - height) > scaleEps { node.simdScale = SIMD3<Float>(currentScale.x, height, currentScale.z) } }
+                    else { node.simdScale = SIMD3<Float>(currentScale.x, height, currentScale.z) }
+                } else {
+                    if DebugToggles.onlyUpdateWhenChanged {
+                        let cs = node.simdScale
+                        if abs(cs.y - 1.0) > scaleEps { node.simdScale = SIMD3<Float>(cs.x, 1.0, cs.z) }
+                        let newH = CGFloat(height)
+                        if abs(cyl.height - newH) > heightEps { cyl.height = newH }
+                    } else { node.simdScale = SIMD3<Float>(1,1,1); cyl.height = CGFloat(height) }
+                    node.pivot = SCNMatrix4MakeTranslation(0, -height/2, 0)
+                }
+            }
+        }
+    }
+    
+    // --- Heartbeat tracking ---
+    private var heartbeatTime: Float = 0.0
+    private(set) var heartbeat: Bool = false
+    private var heartbeatInterval: Float = 0.2 // seconds per beat, will be updated
+    private(set) var heartbeatBPM: Float = 300.0 // expose current bpm for trackers
+    private(set) var heartbeatBPMInstant: Float = 300.0 // expose instantaneous bpm for trackers
+    // Averaging state for BPM
+    private var elapsedSinceBeat: Float = 0.0
+    private var beatIntervals: [Float] = []
+    private let beatAvgCount: Int = 30
+    // --- Heartbeat latching for MIDI/LFO ---
+    private var heartbeatLatched: Bool = false
+    private var heartbeatLatchTicks: Int = 0
+    private let heartbeatLatchSeconds: Float = 0.12 // seconds (ensure MIDI tick sees the pulse)
+    
+    // --- Heartbeat interval calculation ---
+    private func updateHeartbeatInterval() {
+        // Duck heart rate target range (resting to flying)
+        let bpmRest: Float = 120.0
+        let bpmMax: Float = 320.0
+        // Effort from wing speed (dominant) and wind intensity (assist)
+        let wingNorm = max(0.0, min(1.0, (wingFlapSpeed - 1.0) / (6.0 - 1.0))) // 0..1 for ~1.0..6.0
+        let windNorm = max(0.0, min(1.0, windIntensity / 3.0))                  // 0..1 for 0..3
+        let effort = 0.75 * wingNorm + 0.25 * windNorm
+        var instBPM = bpmRest + effort * (bpmMax - bpmRest)
+        instBPM = max(bpmRest, min(bpmMax, instBPM))
+        heartbeatBPMInstant = instBPM
+        // Use instantaneous BPM to schedule the next beat so timing responds immediately
+        heartbeatInterval = 60.0 / max(instBPM, 1e-4)
+        // Before we have any samples, expose instantaneous BPM as the average fallback
+        if beatIntervals.isEmpty { heartbeatBPM = instBPM }
+    }
+    
+    func teardownAndDispose() {
+        // Remove all actions and child nodes from rootNode and its children
+        rootNode.removeAllActions()
+        rootNode.enumerateChildNodes { n, _ in
+            n.removeAllActions()
+            n.removeFromParentNode()
+        }
+        // Remove rootNode from scene
+        sceneRef?.rootNode.childNodes.forEach { node in
+            if node === rootNode { node.removeFromParentNode() }
+        }
+        // Remove lights
+        ambientLightNode?.removeFromParentNode(); ambientLightNode = nil
+        directionalLightNode?.removeFromParentNode(); directionalLightNode = nil
+        // Clear dictionaries and arrays
+        jointNodes.removeAll(); splineNodes.removeAll(); jointPositions.removeAll(); baseJointPositions.removeAll()
+        // Clear scene/scnView refs
+        sceneRef = nil
+        scnView = nil
+    }
+    
+    // Expose latched heartbeat for MIDI/LFO
+    var heartbeatLatchedPublic: Bool { heartbeatLatched }
+}

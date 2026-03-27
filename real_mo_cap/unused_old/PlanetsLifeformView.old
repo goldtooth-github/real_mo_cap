@@ -1,0 +1,407 @@
+import SwiftUI
+import SceneKit
+import UIKit
+import Combine
+
+/// A simple non-publishing cache for MIDI CC deduping
+private final class MIDISendCache { var lastSentCCValues: [Int: Int] = [:] }
+
+
+/// A view that displays a planetary system simulation
+struct PlanetsLifeformView: View {
+    // MARK: - Properties
+    var isActive: Bool = false
+    // Simulation & camera
+    @StateObject private var simulationManager = SimulationManager(updateInterval: 0.016)
+    @StateObject private var customCameraState = PannedCameraState(panX: 0, panY: 0, panZ: 0)
+    @State private var planetsSimulationRef: PlanetsSimulation? = nil
+    // User-adjustable parameters
+    @State private var systemScale: Float = 1.0
+    // New state to track pinch start value
+    @State private var pinchStartScale: Float? = nil
+    @State private var simulationSpeed: Float = 1.0
+    @State private var showTrails: Bool = true // (currently unused but preserved)
+
+    @State private var systemRotationDegrees: Double = 0.0 // NEW: horizontal //rotation angle (degrees)
+   // @State private var simulationSpeed: Float = 1.0
+
+    // MIDI / LFO
+    @State private var showMidiMenu: Bool = false
+    @State private var midiSlots: [MIDIParams] = []
+    private let midiSlotsKey = "MIDI_SLOTS_PLANETS"
+    @State private var midiFocusIndex: Int? = nil
+    @State private var displayLFOOutputs: Bool = false
+    @State private var lfoHistories: [[CGFloat]] = []
+    private let lfoMaxSamples: Int = 160
+    @State private var midiSendCache = MIDISendCache()
+    @State private var midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    // Scene references
+    @State private var scnViewRef: SCNView? = nil
+    @State private var physicsFrameCounter: Int = 0
+    @State private var lastPhysicsUpdateTime: Date? = nil
+    private let physicsUpdateFrequency: Int = 1 // update physics every timer tick for smoothness
+    // MARK: - Configuration
+    private let config = LifeformViewConfig(
+        initialAzimuth: 0,
+        initialElevation:0,
+        initialRadius: 15,
+        minRadius: 8,
+        maxRadius: 25,
+        cameraControlMode: .nicks_control,
+        ambientLightIntensity: 0.3,
+        directionalLightIntensity: 0.5,
+        directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0),
+        disableSceneLights: true, // disables ambient/directional lights for Planets
+        updateInterval: 0.016,
+        title: "Planetary System",
+        description: "Watch planets orbit under gravitational forces",
+        controlPanelColor: Color.black.opacity(0.7),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.indigo.opacity(0.6),
+        controlPanelBottomInset: 88
+    )
+    // MARK: - Body
+    var body: some View {
+        ModifiedSimulationView<PlanetsSimulation>(
+            config: config,
+            customCameraState: customCameraState,
+            createSimulation: { scene in
+                addSpaceBackground(to: scene)
+                let sim = PlanetsSimulation(scene: scene)
+                print("[DBG] PlanetsSimulation created. Planets count: \(sim.planets.count)")
+                print("[DBG] Planets: \(sim.planets.map { $0.name })")
+                planetsSimulationRef = sim
+                sim.setSystemScale(systemScale)
+                sim.userSimulationSpeed = simulationSpeed
+                simulationManager.setSimulation(sim)
+                return sim
+            },
+            controlsBuilder: { simulationBinding in
+                AnyView(
+                    VStack(spacing: 12) {
+              
+           
+                        // NEW: Horizontal rotation around sun (Y-axis)
+                        HStack {
+                            Text("Rotation:")
+                                .foregroundColor(config.controlTextColor)
+                            Slider(value: Binding(
+                                get: { systemRotationDegrees },
+                                set: { newVal in
+                                    systemRotationDegrees = newVal
+                                    let radians = Float(newVal * .pi / 180.0)
+                                    simulationBinding.wrappedValue?.setSystemRotation(angle: radians)
+                                    // Update MIDI/LFO outputs after rotation change
+                                    updateMIDIAndLFOOutputs()
+                                }
+                            ), in: 0...90)
+                            Text(String(format: "%3.0f°", systemRotationDegrees))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 50)
+                        }
+
+                        // Simulation Speed
+                        HStack {
+                            Text("Speed:")
+                                .foregroundColor(config.controlTextColor)
+                            Slider(value: Binding(
+                                get: { Double(simulationSpeed) },
+                                set: { newVal in
+                                    simulationSpeed = Float(newVal)
+                                    simulationBinding.wrappedValue?.setSimulationSpeed(simulationSpeed)
+                                    // Update MIDI/LFO outputs after speed change
+                                    updateMIDIAndLFOOutputs()
+                                }
+
+                            ), in: 0.1...10.0)
+
+                            Text(String(format: "%.2f", simulationSpeed))
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 44)
+                        }
+                        // LFO outputs toggle
+                        Toggle("Display LFO outputs", isOn: $displayLFOOutputs)
+                            .toggleStyle(.switch)
+                            .foregroundColor(config.controlTextColor)
+                        // MIDI + Reset
+                        HStack {
+                            Button(action: { showMidiMenu.toggle() }) {
+                                HStack { Image(systemName: "waveform"); Text("MIDI Settings") }
+                                    .foregroundColor(config.controlTextColor)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
+                                    .background(Color.black.opacity(0.4))
+                                    .cornerRadius(8)
+                            }
+                            Button(action: {
+                                guard let sim = simulationBinding.wrappedValue else { return }
+                                sim.reset()
+                                simulationManager.resetSimulation()
+                                // Reapply current user settings
+                                sim.setSystemScale(systemScale)
+                                sim.setSimulationSpeed(simulationSpeed)
+                                // Update MIDI/LFO outputs after reset
+                                updateMIDIAndLFOOutputs()
+                            }) {
+                                Text("Reset")
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(config.buttonBackgroundColor)
+                                    .cornerRadius(8)
+                                    .foregroundColor(config.controlTextColor)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 8)
+                )
+            },
+            panelBuilder: nil,
+            onViewReady: { simBinding, scnView in
+                simBinding.wrappedValue?.scnView = scnView
+                print("[DBG] SCNView set in PlanetsSimulation.")
+                DispatchQueue.main.async {
+                    planetsSimulationRef = simBinding.wrappedValue
+                    scnViewRef = scnView
+                }
+    
+            },
+            isActive: isActive,
+            systemScaleGetter: { systemScale },
+            systemScaleSetter: { newVal in
+                systemScale = newVal
+                planetsSimulationRef?.setSystemScale(newVal)
+            },
+            systemScaleRange: 0.5...3.0,
+            simulationDragHandler: { delta in
+                let factor: Float = 0.02
+                let movementMultiplier: Float = 2.0 // move planets twice the finger displacement
+                // Horizontal drag -> lateral (camera right projected on XZ)
+                let right = customCameraState.panDirectionVectors().right // (x,0,z)
+                let horiz = Float(-delta.width) * factor * movementMultiplier
+                planetsSimulationRef?.translateSystem(
+                    dx: right.x * horiz,
+                    dz: right.z * horiz
+                )
+                // Vertical drag -> Y elevation only
+                let vert = Float(-delta.height) * factor * movementMultiplier
+                planetsSimulationRef?.translateSystemXY(dx: 0, dy: vert)
+                // Update MIDI/LFO outputs after drag
+                updateMIDIAndLFOOutputs()
+            },
+            enableParallaxPan: true // always enabled now
+        )
+
+        
+    
+
+
+        // LFO overlay
+        .overlay(alignment: .top) {
+            if displayLFOOutputs, !midiSlots.isEmpty {
+                let slotLabelsAll = midiSlots.map { $0.tracked }
+                let slotLabels = slotLabelsAll.map { coordForTracker($0) }
+                let slotColors = slotLabelsAll.map { colorForTracker($0, in: planetsSimulationRef) ?? Color.cyan }
+                LFOOverlayView(labels: slotLabels, histories: lfoHistories, colors: slotColors, onDoubleTap: { idx in
+                    if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                })
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            }
+        }
+        // MIDI settings sheet
+        .sheet(isPresented: $showMidiMenu) {
+            let trackers = makePlanetsTrackers(planetsSimulationRef)
+            let trackerColors = makePlanetsTrackerColors(planetsSimulationRef)
+            let trackerColorNames = makePlanetsTrackerColorNames(planetsSimulationRef)
+            MIDIMenuView(
+                slots: $midiSlots,
+                trackers: trackers,
+                trackerColors: trackerColors,
+                trackerColorNames: trackerColorNames,
+                focusIndex: $midiFocusIndex,
+                onSend: { slots in
+                    guard let sim = planetsSimulationRef else { return }
+                    for slot in slots {
+                        guard let value = resolvePlanetTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                        MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: value)
+                    }
+                }
+            )
+        }
+        .onChange(of: isActive) { _, newValue in
+            DispatchQueue.main.async { simulationManager.isActive = newValue }
+        }
+        .onAppear {
+            simulationManager.isActive = isActive
+            midiClock = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+            loadMIDISlots()
+            syncLFOHistoriesToSlots()
+        }
+        .onDisappear {
+            simulationManager.isActive = false
+            midiClock.upstream.connect().cancel()
+        }
+        .onChange(of: midiSlots) { _, _ in
+            DispatchQueue.main.async { midiSendCache.lastSentCCValues = midiSendCache.lastSentCCValues.filter { $0.key < midiSlots.count } }
+            saveMIDISlots(); syncLFOHistoriesToSlots(); updateMIDIAndLFOOutputs()
+        }
+        .preferredColorScheme(.dark)
+        .onReceive(midiClock) { _ in
+            guard isActive, let sim = planetsSimulationRef else { return }
+            if sim.scnView == nil, let v = scnViewRef { sim.scnView = v }
+            if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+            for (index, slot) in midiSlots.enumerated() {
+                guard let ccVal = resolvePlanetTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                if midiSendCache.lastSentCCValues[index] != ccVal {
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: ccVal)
+                    midiSendCache.lastSentCCValues[index] = ccVal
+                }
+                let norm = CGFloat(max(0, min(127, ccVal))) / 127.0
+                if lfoHistories.indices.contains(index) {
+                    var h = lfoHistories[index]
+                    h.append(norm)
+                    if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                    lfoHistories[index] = h
+                }
+            }
+        }
+    }
+    // MARK: - Helper Methods
+    private func syncLFOHistoriesToSlots() {
+        if lfoHistories.count < midiSlots.count {
+            lfoHistories.append(contentsOf: Array(repeating: [], count: midiSlots.count - lfoHistories.count))
+        } else if lfoHistories.count > midiSlots.count {
+            lfoHistories = Array(lfoHistories.prefix(midiSlots.count))
+        }
+    }
+    // NEW: Update MIDI and LFO outputs when coordinates change
+    private func updateMIDIAndLFOOutputs() {
+        guard let sim = planetsSimulationRef else { return }
+        if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+        for (index, slot) in midiSlots.enumerated() {
+            let ccValOpt = resolvePlanetTracker(slot.tracked, in: sim, range: slot.range)
+            if let ccVal = ccValOpt {
+                if midiSendCache.lastSentCCValues[index] != ccVal {
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: ccVal)
+                    midiSendCache.lastSentCCValues[index] = ccVal
+                }
+                let norm = CGFloat(max(0, min(127, ccVal))) / 127.0
+                if lfoHistories.indices.contains(index) {
+                    var h = lfoHistories[index]; h.append(norm)
+                    if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                    lfoHistories[index] = h
+                }
+            }
+        }
+    }
+    private func loadMIDISlots() {
+        if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
+           let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) { midiSlots = loaded }
+        else { midiSlots = [MIDIParams(tracked: "X")] }
+    }
+    private func saveMIDISlots() {
+        if let data = try? JSONEncoder().encode(midiSlots) { UserDefaults.standard.set(data, forKey: midiSlotsKey) }
+    }
+    private func addSpaceBackground(to scene: SCNScene) {
+            let backgroundSphere = SCNSphere(radius: 20)
+            backgroundSphere.firstMaterial?.isDoubleSided = true
+            backgroundSphere.firstMaterial?.diffuse.contents = UIImage(named: "sta")
+            backgroundSphere.firstMaterial?.lightingModel = .constant
+            let starsNode = SCNNode(geometry: backgroundSphere)
+            starsNode.position = SCNVector3(0, 0, 0)
+            scene.rootNode.addChildNode(starsNode)
+        }
+        
+        
+        
+ 
+    private func makePlanetsTrackers(_ sim: PlanetsSimulation?) -> [String] {
+        guard let sim = sim else { return [] }
+        var names: [String] = []
+        for p in sim.planets {
+            names.append("\(p.name).x")
+            names.append("\(p.name).y")
+        }
+        return names
+    }
+    private func makePlanetsTrackerColors(_ sim: PlanetsSimulation?) -> [String: Color] {
+        guard let sim = sim else { return [:] }
+        var map: [String: Color] = [:]
+        for p in sim.planets {
+            let c = Color(p.color)
+            map["\(p.name).x"] = c; map["\(p.name).y"] = c; map["\(p.name).speed"] = c; map["\(p.name).distance"] = c
+        }
+        return map
+    }
+    private func makePlanetsTrackerColorNames(_ sim: PlanetsSimulation?) -> [String: String] {
+        guard let sim = sim else { return [:] }
+        var map: [String: String] = [:]
+        for p in sim.planets {
+            let name = readableColorName(from: p.color)
+            map["\(p.name).x"] = name; map["\(p.name).y"] = name; map["\(p.name).speed"] = name; map["\(p.name).distance"] = name
+        }
+        return map
+    }
+    private func readableColorName(from uiColor: UIColor) -> String {
+        let palette: [(String, UIColor)] = [("Yellow", .yellow),("Orange", .orange),("Red", .red),("Purple", .purple),("Blue", .blue),("Cyan", .cyan),("Green", .green),("Brown", .brown),("Gray", .gray)]
+        func rgba(_ c: UIColor) -> (CGFloat,CGFloat,CGFloat,CGFloat) {
+            var r: CGFloat = 0,g: CGFloat = 0,b: CGFloat = 0,a: CGFloat = 0
+            if c.getRed(&r, green: &g, blue: &b, alpha: &a) { return (r,g,b,a) }
+            let cg = c.cgColor.converted(to: CGColorSpaceCreateDeviceRGB(), intent: .defaultIntent, options: nil)
+            if let cg = cg, let comps = cg.components, comps.count >= 3 {
+                let r = comps[0], g = comps[1], b = comps[2]; let a = comps.count >= 4 ? comps[3] : 1
+                return (r,g,b,a)
+            }
+            return (0,0,0,1)
+        }
+        let (r1,g1,b1,_) = rgba(uiColor)
+        var best: (String, CGFloat) = ("", .greatestFiniteMagnitude)
+        for (name, col) in palette {
+            let (r2,g2,b2,_) = rgba(col)
+            let d = (r1-r2)*(r1-r2)+(g1-g2)*(g1-g2)+(b1-b2)*(b1-b2)
+            if d < best.1 { best = (name, d) }
+        }
+        return best.0.isEmpty ? "Color" : best.0
+    }
+    private func resolvePlanetTracker(_ tracker: String, in sim: PlanetsSimulation, range: ClosedRange<Int>) -> Int? {
+        guard let dot = tracker.firstIndex(of: ".") else { return nil }
+        let planetName = String(tracker[..<dot])
+        let component = String(tracker[tracker.index(after: dot)...])
+        guard let planet = sim.planets.first(where: { $0.name == planetName }) else { return nil }
+        guard let scnView = sim.scnView, let node = planet.node else { return nil }
+        let worldPos = node.presentation.worldPosition
+        let proj = scnView.projectPoint(worldPos)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let xView = CGFloat(proj.x)
+        let yView = h - CGFloat(proj.y)
+        print("[DBG] Planet '", planet.name, "' screen X:", xView, " Y:", yView)
+        let x127 = Int(round(min(max(xView, 0), w) / w * 127))
+        let y127 = Int(round(min(max(yView, 0), h) / h * 127))
+        let raw = component == "x" ? Float(x127) : Float(y127)
+        return scaleToRange(normalizeToCC(raw: raw, minVal: 0, maxVal: 127), range: range)
+    }
+    private func normalizeToCC(raw: Float, minVal: Float, maxVal: Float) -> Int {
+        guard maxVal > minVal else { return 0 }
+        let clamped = max(min(raw, maxVal), minVal)
+        let t = (clamped - minVal) / (maxVal - minVal)
+        return max(0, min(127, Int(round(t * 127))))
+    }
+    private func scaleToRange(_ cc: Int, range: ClosedRange<Int>) -> Int {
+        let t = Float(cc) / 127.0
+        let minR = Float(range.lowerBound), maxR = Float(range.upperBound)
+        let v = Int(round(minR + t * (maxR - minR)))
+        return max(range.lowerBound, min(range.upperBound, v))
+    }
+    private func colorForTracker(_ tracker: String, in sim: PlanetsSimulation?) -> Color? {
+        guard let sim = sim, let dot = tracker.firstIndex(of: ".") else { return nil }
+        let planetName = String(tracker[..<dot])
+        return sim.planets.first { $0.name == planetName }.map { Color($0.color) }
+    }
+    private func coordForTracker(_ tracker: String) -> String {
+        if let dot = tracker.firstIndex(of: ".") { return String(tracker[tracker.index(after: dot)...]) }
+        return tracker
+    }
+}
+
+#Preview { PlanetsLifeformView(isActive: true) }

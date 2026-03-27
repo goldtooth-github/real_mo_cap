@@ -1,0 +1,410 @@
+import SwiftUI
+import SceneKit
+import UIKit
+import Combine
+
+// Non-publishing cache for MIDI CC deduplication
+private final class MIDISendCache { var lastSentCCValues: [Int: Int] = [:] }
+
+struct JellyfishLifeformView: View {
+    // Activation flag from pager
+    var isActive: Bool = false
+    // State parameters
+    @State private var pulseSpeed: Float = 1.0
+    @State private var swaySpeed: Float = 0.6
+    @State private var verticalDriftSpeed: Float = 0.25
+    @State private var jellySize: Float = 1.3 // pinch scale
+    @State private var rotation: Float = 90.0
+    // Ranges
+    private let pulseSpeedRange: ClosedRange<Float> = 0.1...3.0
+    private let swaySpeedRange: ClosedRange<Float> = 0.1...3.5
+    private let driftSpeedRange: ClosedRange<Float> = 0.0...1.2
+    // Use simulation bounds for jellySize
+    private let minJellySize: Float = 0.4 // match JellyfishSimulation minScale
+    private let maxJellySize: Float = 2.0 // match JellyfishSimulation maxScale
+    private let sizeRange: ClosedRange<Float> = 0.4...2.0
+    private let rotationRange: ClosedRange<Float> = 0.0...360.0
+    // Simulation reference
+    @State private var simRef: JellyfishSimulation?
+    // Camera state
+    @StateObject private var cameraState = CameraOrbitState()
+    // --- MIDI/LFO state ---
+    @State private var showMidiMenu: Bool = false
+    @State private var midiSlots: [MIDIParams] = []
+    private let midiSlotsKey = "MIDI_SLOTS_JELLYFISH"
+    @State private var midiSendCache = MIDISendCache()
+    @State private var midiClock = Timer.publish(every: 0.08, on: .main, in: .common).autoconnect()
+    @State private var displayLFOOutputs: Bool = false
+    @State private var lfoHistories: [[CGFloat]] = []
+    private let lfoMaxSamples: Int = 160
+    @State private var midiFocusIndex: Int? = nil
+    @State private var scnViewRef: SCNView? = nil
+    @State private var showBoundary: Bool = false // <-- add state for boundary toggle
+    // --- Boundary scale state ---
+    @State private var boundaryWidth: Float = 40.0
+    @State private var boundaryHeight: Float = 40.0
+    @State private var boundaryDepth: Float = 10.0
+    private let boundaryWidthRange: ClosedRange<Float> = 5.0...40.0
+    private let boundaryHeightRange: ClosedRange<Float> = 5.0...40.0
+    private let boundaryDepthRange: ClosedRange<Float> = 0.5...10.0
+    //@State private var showGlowLight: Bool = true // New state for glow light toggle
+    
+    // Config
+    private let config = LifeformViewConfig(
+        initialAzimuth: 0,
+        initialElevation: 0,
+        initialRadius: 40,
+        minRadius: 1,
+        maxRadius: 40,
+        cameraControlMode: .nicks_control,
+        ambientLightIntensity: 0.45,
+        directionalLightIntensity: 0.7,
+        directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/5, z: 0),
+        updateInterval: 0.016,
+        title: "Jellyfish",
+        description: "Translucent drifting jellyfish",
+        controlPanelColor: Color.black.opacity(0.55),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.purple.opacity(0.55),
+        controlPanelBottomInset: 5 // ---<this
+    )
+    @StateObject private var simulationManager = SimulationManager(updateInterval: 0.016)
+    
+    // Helper function for simulation creation
+    private func createJellyfishSimulation(scene: SCNScene) -> JellyfishSimulation {
+        let sim = JellyfishSimulation(scene: scene, scnView: nil)
+        sim.setPulseSpeed(pulseSpeed)
+        sim.setSwaySpeed(swaySpeed)
+        sim.setVerticalDriftSpeed(verticalDriftSpeed)
+        sim.setJellySize(jellySize)
+        sim.setRotation(rotation)
+        sim.setShowBoundary(showBoundary)
+        sim.setBoundaryScale(width: boundaryWidth, height: boundaryHeight, depth: boundaryDepth)
+       // sim.setShowGlowLight(showGlowLight) // Set initial glow light state
+        simRef = sim
+        return sim
+    }
+    // Helper function for controls builder
+    private func buildJellyfishControls(simBinding: Binding<JellyfishSimulation?>) -> AnyView {
+        AnyView(
+            VStack(spacing: 10) {
+                // Pulse Speed
+                HStack {
+                    Text("Pulse").foregroundColor(config.controlTextColor)
+                    Slider(value: $pulseSpeed, in: pulseSpeedRange)
+                        .onChange(of: pulseSpeed) { _, v in
+                            simBinding.wrappedValue?.setPulseSpeed(v)
+                        }
+                    Text(String(format: "%.2f", pulseSpeed)).foregroundColor(config.controlTextColor).frame(width: 48)
+                }
+                // Sway Speed
+                // Rotation
+                HStack {
+                    Text("Rotation").foregroundColor(config.controlTextColor)
+                    Slider(value: $rotation, in: rotationRange)
+                        .onChange(of: rotation) { _, v in
+                            simBinding.wrappedValue?.setRotation(v)
+                        }
+                    Text(String(format: "%.0f°", rotation)).foregroundColor(config.controlTextColor).frame(width: 48)
+                }
+              
+             
+             
+                // LFO overlay toggle
+                Toggle("Display LFO outputs", isOn: $displayLFOOutputs)
+                    .toggleStyle(.switch)
+                    .foregroundColor(config.controlTextColor)
+                // MIDI settings + Reset
+                HStack {
+                 
+                   
+                    Button("Reset") {
+                        simBinding.wrappedValue?.reset()
+                        pulseSpeed = 1.0
+                        swaySpeed = 0.6
+                        verticalDriftSpeed = 0.25
+                        jellySize = 1.3
+                        rotation = 90.0 // <-- set to 90 degrees on reset
+                        //showGlowLight = true // Reset glow light toggle
+                        simBinding.wrappedValue?.setPulseSpeed(pulseSpeed)
+                        simBinding.wrappedValue?.setSwaySpeed(swaySpeed)
+                        simBinding.wrappedValue?.setVerticalDriftSpeed(verticalDriftSpeed)
+                        simBinding.wrappedValue?.setJellySize(jellySize)
+                        simBinding.wrappedValue?.setRotation(rotation)
+                        simBinding.wrappedValue?.setShowBoundary(showBoundary) // <-- reset boundary state
+                        // Reset boundary scale
+                        simBinding.wrappedValue?.setBoundaryScale(width: boundaryWidth, height: boundaryHeight, depth: boundaryDepth)
+                        //simBinding.wrappedValue?.setShowGlowLight(showGlowLight)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(config.buttonBackgroundColor)
+                    .cornerRadius(8)
+                    .foregroundColor(config.controlTextColor)
+                    
+                    Spacer()
+                    Button(action: { showMidiMenu.toggle() }) {
+                        HStack { Image(systemName: "waveform"); Text("MIDI Settings") }
+                    }    .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(config.buttonBackgroundColor)
+                        .cornerRadius(8)
+                        .foregroundColor(config.controlTextColor)
+                    
+                    
+                }
+               
+            }
+                .padding(.bottom, 40) // ---<this
+            
+        )
+    }
+    
+    var body: some View {
+        ModifiedSimulationView<JellyfishSimulation>(
+            config: config,
+            customCameraState: cameraState,
+            createSimulation: createJellyfishSimulation,
+            controlsBuilder: buildJellyfishControls,
+            // Provide the SCNView so screen-space wrapping works
+            onViewReady: { simBinding, scnView in
+                simBinding.wrappedValue?.scnView = scnView
+                scnViewRef = scnView
+                DispatchQueue.main.async { simRef = simBinding.wrappedValue }
+            },
+            // --- Add pinch/scale gesture support ---
+            systemScaleGetter: { jellySize },
+            systemScaleSetter: { newScale in
+                let clamped = min(max(newScale, minJellySize), maxJellySize)
+                jellySize = clamped
+                simRef?.setJellySize(clamped)
+            },
+            systemScaleRange: sizeRange,
+            simulationDragHandler: { delta in
+                // Handle drag gestures for jellyfish movement
+                let factor: Float = 0.02
+                let movementMultiplier: Float = 2.0
+                let right = cameraState.panDirectionVectors().right
+                let horiz = Float(-delta.width) * factor * movementMultiplier
+                simRef?.translate(dx: right.x * horiz, dy: 0, dz: right.z * horiz)
+                let vert = Float(-delta.height) * factor * movementMultiplier
+                simRef?.translate(dx: 0, dy: vert, dz: 0)
+            },
+            enableParallaxPan: false
+        )
+        .preferredColorScheme(.dark)
+        // LFO Overlay
+        .overlay(alignment: .top) {
+            if displayLFOOutputs, !midiSlots.isEmpty {
+                let labels = midiSlots.map { coordForTracker($0.tracked) }
+                let colors = midiSlots.map { colorForTrackerHash($0.tracked) }
+                LFOOverlayView(labels: labels, histories: lfoHistories, colors: colors, onDoubleTap: { idx in
+                    if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                })
+                .padding(.top, 8)
+                .padding(.horizontal, 8)
+            }
+        }
+        // MIDI Settings sheet
+        .sheet(isPresented: $showMidiMenu) {
+            let trackers = makeJellyfishTrackers(simRef)
+            MIDIMenuView(
+                slots: $midiSlots,
+                trackers: trackers,
+                focusIndex: $midiFocusIndex,
+                onSend: { slots in
+                    guard let sim = simRef else { return }
+                    for slot in slots {
+                        guard let value = resolveJellyfishTracker(slot.tracked, in: sim, range: slot.range) else { continue }
+                        print("[Jellyfish MIDI] channel: \(slot.channel), cc: \(slot.ccNumber), value: \(value), tracker: \(slot.tracked)")
+                        MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: value)
+                    }
+                }
+            )
+        }
+        // Lifecycle + MIDI/LFO updates
+        .onChange(of: midiSlots) { _, _ in
+            midiSendCache.lastSentCCValues = midiSendCache.lastSentCCValues.filter { $0.key < midiSlots.count }
+            saveMIDISlots(); syncLFOHistoriesToSlots()
+        }
+        .onReceive(midiClock) { _ in
+            guard isActive, let sim = simRef else { return }
+            if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+            if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+            for (index, slot) in midiSlots.enumerated() {
+                // Resolve raw CC (0..127) from tracker
+                guard let rawCC = resolveJellyfishTrackerRawCC(slot.tracked, in: sim) else { continue }
+                // Map to slot range and send MIDI if changed
+                let mapped = scaleToRange(rawCC, range: slot.range)
+                if midiSendCache.lastSentCCValues[index] != mapped {
+                    print("[Jellyfish MIDI] channel: \(slot.channel), cc: \(slot.ccNumber), value: \(mapped), tracker: \(slot.tracked)")
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: mapped)
+                    midiSendCache.lastSentCCValues[index] = mapped
+                }
+                // Update LFO overlay only if visible (use raw normalized value)
+                if displayLFOOutputs {
+                    let norm = CGFloat(rawCC) / 127.0
+                    if lfoHistories.indices.contains(index) {
+                        var h = lfoHistories[index]
+                        h.append(max(0, min(1, norm)))
+                        if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                        lfoHistories[index] = h
+                    }
+                }
+            }
+        }
+        // forward param changes
+        .onChange(of: pulseSpeed) { _, v in simRef?.setPulseSpeed(v) }
+        .onChange(of: swaySpeed) { _, v in simRef?.setSwaySpeed(v) }
+        .onChange(of: verticalDriftSpeed) { _, v in simRef?.setVerticalDriftSpeed(v) }
+        .onChange(of: rotation) { _, v in simRef?.setRotation(v) }
+        .onChange(of: boundaryWidth) { _, v in
+            simRef?.setBoundaryScale(width: v, height: boundaryHeight, depth: boundaryDepth)
+        }
+        .onChange(of: boundaryHeight) { _, v in
+            simRef?.setBoundaryScale(width: boundaryWidth, height: v, depth: boundaryDepth)
+        }
+        .onChange(of: boundaryDepth) { _, v in
+            simRef?.setBoundaryScale(width: boundaryWidth, height: boundaryHeight, depth: v)
+        }
+        
+        .onAppear {
+            loadMIDISlots()
+            syncLFOHistoriesToSlots()
+            simulationManager.isActive = isActive // Activate simulation when view appears
+            midiClock = Timer.publish(every: 0.08, on: .main, in: .common).autoconnect() // Restart MIDI clock
+            // Set initial boundary scale
+            simRef?.setBoundaryScale(width: boundaryWidth, height: boundaryHeight, depth: boundaryDepth)
+        }
+        .onDisappear {
+            simulationManager.isActive = false // Deactivate simulation when view disappears
+            midiClock.upstream.connect().cancel() // Stop MIDI timer
+        }
+    }
+}
+
+// Helper for gesture handling
+class GestureHandler {
+    static let shared = GestureHandler()
+    var jellySizeSetter: ((Float) -> Void)?
+    private var lastScale: Float = 1.0
+    @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            lastScale = Float(gesture.scale)
+        case .changed:
+            let scaleDelta = Float(gesture.scale) / lastScale
+            lastScale = Float(gesture.scale)
+            if let setter = jellySizeSetter {
+                setter(scaleDelta * lastScale * 5.0) // 5.0 is default size
+            }
+        default:
+            break
+        }
+    }
+}
+
+// MARK: - MIDI/LFO helpers
+private extension JellyfishLifeformView {
+    func loadMIDISlots() {
+        if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
+           let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) {
+            midiSlots = loaded
+        } else {
+            midiSlots = [MIDIParams(tracked: makeJellyfishTrackers(simRef).first ?? "j0_outer.x")]
+        }
+    }
+    func saveMIDISlots() {
+        if let data = try? JSONEncoder().encode(midiSlots) { UserDefaults.standard.set(data, forKey: midiSlotsKey) }
+    }
+    func syncLFOHistoriesToSlots() {
+        if lfoHistories.count < midiSlots.count {
+            lfoHistories.append(contentsOf: Array(repeating: [], count: midiSlots.count - lfoHistories.count))
+        } else if lfoHistories.count > midiSlots.count {
+            lfoHistories = Array(lfoHistories.prefix(midiSlots.count))
+        }
+    }
+    func makeJellyfishTrackers(_ sim: JellyfishSimulation?) -> [String] {
+        guard let sim = sim else { return ["j0_outer.x", "j0_outer.y"] }
+        var names: [String] = []
+        for base in sim.trackerNames() { names.append(contentsOf: ["\(base).x", "\(base).y"]) }
+        return names
+    }
+    // Raw 0..127 resolver (no custom range mapping)
+    func resolveJellyfishTrackerRawCC(_ tracker: String, in sim: JellyfishSimulation) -> Int? {
+        let parts = tracker.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        let base = parts[0]
+        let comp = parts[1]
+        guard let (idx, nodeType) = parseBaseTracker(base) else { return nil }
+        // Only allow x and y
+        guard comp == "x" || comp == "y" else { return nil }
+        if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+        if let proj = sim.projectedJellyXY127(index: idx, nodeType: nodeType) {
+            return comp == "x" ? proj.x : proj.y
+        }
+        guard let wp = sim.jellyWorldPosition(index: idx, nodeType: nodeType) else { return nil }
+        let vb = sim.visualBounds
+        let rawF: Float = (comp == "x") ? wp.x : wp.y
+        return normalizeToCC(raw: rawF, minVal: -vb, maxVal: vb)
+    }
+    func resolveJellyfishTracker(_ tracker: String, in sim: JellyfishSimulation, range: ClosedRange<Int>) -> Int? {
+        let parts = tracker.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+        let base = parts[0]
+        let comp = parts[1]
+        guard let (idx, nodeType) = parseBaseTracker(base) else { return nil }
+        // Only allow x and y
+        var value: Int?
+        if comp == "x" || comp == "y" {
+            if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+            if let proj = sim.projectedJellyXY127(index: idx, nodeType: nodeType) {
+                value = comp == "x" ? proj.x : proj.y
+            }
+            if value == nil, let wp = sim.jellyWorldPosition(index: idx, nodeType: nodeType) {
+                let vb = sim.visualBounds
+                let rawF: Float = (comp == "x") ? wp.x : wp.y
+                value = normalizeToCC(raw: rawF, minVal: -vb, maxVal: vb)
+            }
+        }
+        guard let v = value else { return nil }
+        return scaleToRange(v, range: range)
+    }
+    func parseBaseTracker(_ base: String) -> (Int, String)? {
+        let regex = try? NSRegularExpression(pattern: #"j(\d+)_(\w+)"#)
+        guard let match = regex?.firstMatch(in: base, options: [], range: NSRange(location: 0, length: base.utf16.count)) else { return nil }
+        guard match.numberOfRanges == 3 else { return nil }
+        let idxRange = Range(match.range(at: 1), in: base)
+        let typeRange = Range(match.range(at: 2), in: base)
+        guard let idxStr = idxRange.flatMap({ String(base[$0]) }),
+              let idx = Int(idxStr),
+              let type = typeRange.flatMap({ String(base[$0]) }) else { return nil }
+        return (idx, type)
+    }
+    func normalizeToCC(raw: Float, minVal: Float, maxVal: Float) -> Int {
+        let range = maxVal - minVal
+        guard range > 0 else { return 0 }
+        // Wrap raw value within [minVal, maxVal] using modulo
+        let wrappedRaw = raw - minVal
+        let modRaw = wrappedRaw.truncatingRemainder(dividingBy: range)
+        let norm = (modRaw < 0 ? modRaw + range : modRaw) / range
+        return Int(round(norm * 127))
+    }
+    func scaleToRange(_ value: Int, range: ClosedRange<Int>) -> Int {
+        let minV = range.lowerBound
+        let maxV = range.upperBound
+        let norm = CGFloat(value) / 127.0
+        return Int(round(norm * CGFloat(maxV - minV) + CGFloat(minV)))
+    }
+    func coordForTracker(_ tracker: String) -> String {
+        if tracker.hasSuffix(".x") { return "X" }
+        if tracker.hasSuffix(".y") { return "Y" }
+        if tracker.hasSuffix(".z") { return "Z" }
+        return tracker
+    }
+    func colorForTrackerHash(_ tracker: String) -> Color {
+        let hash = abs(tracker.hashValue)
+        let hue = Double(hash % 360) / 360.0
+        return Color(hue: hue, saturation: 0.7, brightness: 0.9)
+    }
+}

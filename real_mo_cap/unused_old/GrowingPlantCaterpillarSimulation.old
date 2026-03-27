@@ -1,0 +1,1392 @@
+import SceneKit
+import UIKit
+
+// Growing plant with emerging leaves and a single caterpillar that eats them while they grow.
+// - Leaves spawn over time around a central stem, each composed of small cells that reveal from base to tip as growth progresses.
+// - A single caterpillar (with colored leading segments) wanders and preferentially heads toward uneaten, revealed cells to eat them.
+// - Public API mirrors CaterpillarsSimulation for segment tracking + scale/speed controls.
+
+class GrowingPlantCaterpillarSimulation: LifeformSimulation {
+    // MARK: - Inner Types
+    class LeafCell {
+        let node: SCNNode
+        let active: Bool // inside elliptical mask
+        var eaten: Bool = false
+        let xNorm: Float // 0 (base) -> 1 (tip) used for reveal threshold
+        var revealed: Bool = false
+        // NEW: normalized radial distance (0 center vein -> 1 perimeter) for perimeter-inward eating order
+        let rNorm: Float
+        init(node: SCNNode, active: Bool, xNorm: Float, rNorm: Float) { self.node = node; self.active = active; self.xNorm = xNorm; self.rNorm = rNorm }
+    }
+    class Leaf {
+        let id: Int
+        let angle: Float // around Y
+        var growth: Float = 0 // 0..1
+        let maxLength: Float
+        let maxWidth: Float
+        var cells: [LeafCell] = []
+        init(id: Int, angle: Float, maxLength: Float, maxWidth: Float) { self.id = id; self.angle = angle; self.maxLength = maxLength; self.maxWidth = maxWidth }
+    }
+    struct Segment { var position: SCNVector3; var node: SCNNode }
+    struct Caterpillar { var segments: [Segment]; var heading: SCNVector3; var headingTimer: Float; var locomotion: Float; var compressPhase: Float; var baseSpacing: Float; var speed: Float }
+    
+    // MARK: - Scene & Public
+    private var scene: SCNScene
+    weak var scnView: SCNView?
+    
+    // MARK: - Plant State
+    private var leaves: [Leaf] = []
+    private var nextLeafID: Int = 0
+    private var timeSinceLastLeaf: Float = 0
+    private let maxLeaves: Int = 160 // increased leaf cap
+    private let initialSeedLeaves: Int = 5 // NEW: immediately visible leaves
+    // PERFORMANCE: dynamic leaf resolution
+    private var performanceMode: Bool = true
+    private var leafCols: Int { performanceMode ? 18 : 26 } // reduced from 26
+    private var leafRows: Int { performanceMode ? 10 : 14 } // reduced from 14
+    private let cellSize: Float = 0.18
+    private let leafGrowthRate: Float = 0.08 // per second
+    private let palette: [UIColor] = [.systemRed,.systemOrange,.systemYellow,.systemGreen,.systemBlue,.systemIndigo,.systemPurple]
+    
+    // Stem
+    private var stemNode: SCNNode = SCNNode()
+    private var stemHeight: Float = 0
+    private let stemGrowthRate: Float = 0.12
+    private let stemRadius: Float = 0.12
+    private let stemSegmentExtraLength: Float = 0.06 // NEW: extra length added to each segment (distributed equally past endpoints) to visually join angled segments
+    private let stemJointAngleThreshold: Float = 0.22 // NEW: radians (~12.6°) threshold for adding a joint sphere at sharp bends
+    private let stemJointScale: Float = 1.08 // NEW: multiplier on stem radius for joint sphere size
+    
+    // Caterpillar
+    private var caterpillar: Caterpillar!
+    private let segmentsCount = 14
+    private let baseSegmentSpacing: Float = 0.095 // was 0.17, closer segments
+    private let baseSpeed: Float = 0.05
+    private let turnInterval: ClosedRange<Float> = 1.0...2.4
+    private let biteRadius: Float = 0.28
+    private var headingBlend: Float = 0.45
+    
+    // Dynamic coefficients
+    private var scaleMultiplier: Float = 1.0
+    private var speedMultiplier: Float = 1.0
+    
+    // New stem/branch support
+    private struct StemSegment { let start: SCNVector3; let end: SCNVector3; let length: Float; let node: SCNNode }
+    private class StemPath {
+        let id: Int
+        let isMain: Bool
+        var controlPoints: [SCNVector3]
+        var segments: [StemSegment] = []
+        var totalLength: Float = 0
+        var grownLength: Float = 0 // current grown length along path
+        let growthRate: Float // units per second
+        var activated: Bool = false // branches activate after main passes trigger
+        let activateAtMainLength: Float // for branches (absolute main-stem length)
+        let radius: Float // NEW: base cylinder radius used for surface offset
+        init(id: Int, isMain: Bool, controlPoints: [SCNVector3], growthRate: Float, activateAtMainLength: Float, radius: Float) {
+            self.id = id; self.isMain = isMain; self.controlPoints = controlPoints; self.growthRate = growthRate; self.activateAtMainLength = activateAtMainLength; self.radius = radius
+        }
+    }
+    private var stems: [StemPath] = []
+    private var mainStem: StemPath? { stems.first(where: { $0.isMain }) }
+    private var nextStemID: Int = 0
+    private var plantStartTime: TimeInterval = CACurrentMediaTime()
+    private var leafSpawnAccumulator: Float = 0
+    private let leafSpawnInterval: Float = 2.2 // faster spawning
+    // PERFORMANCE additions
+    private static var leafMaterialPool: [SCNMaterial] = []
+    private let leafMaterialPoolSize = 16
+    // removed leafTransformAccumulator / leafTransformInterval (wind/droop stripped)
+    private var cellQueryScratch: [LeafCell] = []
+    // Batched removals (no per-node animation for mass deletes)
+    private var pendingNodeRemovals: [SCNNode] = []
+    // Pooled random values for hot loops
+    private var randPool: [Float] = []
+    private var randIndex: Int = 0
+    private func fastRandomUnit() -> Float {
+        if randPool.isEmpty { return Float.random(in: 0...1) }
+        let v = randPool[randIndex]
+        randIndex += 1
+        if randIndex >= randPool.count { randIndex = 0 }
+        return v
+    }
+    
+    // Extended leaf to record anchor along stem
+    private class AnchoredLeaf: Leaf, Hashable {
+        let stemID: Int
+        let anchorS: Float // distance along stem path where attached
+        let outwardDir: SCNVector3 // unit vector outward
+        let upDir: SCNVector3 // local up at anchor
+        let anchorPos: SCNVector3
+        // Simplified: retain only base orientation (wind/droop removed)
+        let container: SCNNode
+        let baseOrientation: SCNVector4 // axis-angle
+        // PERFORMANCE: cache active cells
+        var activeCells: [LeafCell] = [] // only active subset
+        var uneatenActiveCount: Int = 0
+        // NEW: cached active cells sorted by x for traversal
+        var activeCellsSortedByX: [LeafCell] = []
+        // NEW: cached active cells sorted by perimeter (outer edge first -> inward)
+        var activeCellsSortedByPerimeter: [LeafCell] = []
+        init(id: Int, angle: Float, maxLength: Float, maxWidth: Float, stemID: Int, anchorS: Float, outwardDir: SCNVector3, upDir: SCNVector3, anchorPos: SCNVector3) {
+            self.stemID = stemID; self.anchorS = anchorS; self.outwardDir = outwardDir; self.upDir = upDir; self.anchorPos = anchorPos
+            let baseRot = AnchoredLeaf.rotationAligning(from: SCNVector3(1,0,0), to: outwardDir)
+            self.baseOrientation = baseRot
+            self.container = SCNNode(); self.container.name = "gp_leaf_container_\(id)"; self.container.position = anchorPos; self.container.rotation = baseRot
+            super.init(id: id, angle: angle, maxLength: maxLength, maxWidth: maxWidth)
+        }
+        private static func rotationAligning(from: SCNVector3, to: SCNVector3) -> SCNVector4 {
+            let f = from.normalized(); let t = to.normalized()
+            var dotVal = SCNVector3.dot(f,t); dotVal = max(-1,min(1,dotVal))
+            if dotVal > 0.999 { return SCNVector4(0,1,0,0) }
+            if dotVal < -0.999 { // opposite
+                let axis = abs(f.x) < 0.9 ? SCNVector3(1,0,0) : SCNVector3(0,1,0)
+                return SCNVector4(axis.x, axis.y, axis.z, Float.pi)
+            }
+            let axis = SCNVector3.cross(f,t).normalized()
+            let angle = acos(dotVal)
+            return SCNVector4(axis.x, axis.y, axis.z, angle)
+        }
+        static func == (lhs: AnchoredLeaf, rhs: AnchoredLeaf) -> Bool {
+            return lhs.id == rhs.id
+        }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+        }
+    }
+    // Replace leaves array with anchored leaves (still refer via base type in existing code loops)
+    private var anchoredLeaves: [AnchoredLeaf] = []
+    
+    // Dynamic main stem extension
+    private var originalMainStemPlannedLength: Float = 0
+    private let mainStemTargetLengthMultiplier: Float = 3.0
+    private var nextBranchPlannedThresholds: [Float] = []
+    private var createdDynamicBranchCount: Int = 0
+    // NEW: stems static flag (fully grown on appear, no further stem growth)
+    private let stemsStatic: Bool = true
+    
+    private let rootNode = SCNNode() // NEW: container for translation & scaling
+    private var globalScale: Float = 1.0 // uniform scene scale separate from biological scaleMultiplier
+    // NEW: Path traversal state for caterpillar along stems
+    private var traversalStem: StemPath? = nil
+    private var traversalDirection: Float = 1.0 // +1 forward along stem, -1 backward
+    private var traversalHeadS: Float = 0.0 // distance along current stem
+    private var wavePhase: Float = 0.0
+    private let waveSpeed: Float = 4.0
+    private let lateralWaveAmplitude: Float = 0.05
+    private let segmentWavePhaseOffset: Float = 0.5
+    private let pathSpeedMultiplier: Float = 4.0 // overall faster movement along stems
+    
+    // Caterpillar targeting
+    private weak var currentLeafTarget: AnchoredLeaf? = nil
+    private var leafRetargetTimer: Float = 0
+    private let retargetInterval: Float = 2.0
+    private let arrivalThreshold: Float = 0.05
+    // Latching & munching
+    private weak var latchedLeaf: AnchoredLeaf? = nil
+    private var munchAccumulator: Float = 0
+    private let munchCellsPerSecond: Float = 28 // eat speed when latched
+    private var latchedProgress: Float = 0 // 0..1 progression along leaf length for head placement
+    // LADYBIRDS (new multi-insect system) -------------------------
+    // TUNING GUIDE:
+    //  - ladybirdBaseSpeed: baseline speed scalar (increase -> faster everywhere)
+    //  - stemTraversalFactorTarget / stemTraversalFactorWander: multipliers for motion along stems (increase -> faster on stems when moving to target / wandering)
+    //  - leafProgressFactor: multiplier for how quickly a latched ladybird advances along the leaf perimeter ordering (decrease -> slower movement across leaf while eating)
+    //  - ladybirdMunchRate: cells per second consumed while latched (decrease -> slower eating)
+    //  - speedMultiplier (public control) scales all movement & eating globally.
+    //  NOTE: User requested: faster on stems, slower on leaves. Applied by raising stem traversal factors & base speed, reducing leaf progress + munch rate.
+    private let stemTraversalFactorTarget: Float = 0.95 // was 0.65 (increase for faster targeting travel)
+    private let stemTraversalFactorWander: Float = 0.80 // was 0.55 (increase for faster idle stem wander)
+    private let leafProgressFactor: Float = 0.25 // was 0.42 (slower crawling while latched)
+    private struct Ladybird {
+        var node: SCNNode
+        var position: SCNVector3
+        var direction: SCNVector3
+        var speed: Float
+        weak var targetLeaf: AnchoredLeaf?
+        weak var latchedLeaf: AnchoredLeaf?
+        var latchTimer: Float
+        var munchAccumulator: Float
+        var wanderTimer: Float
+        var color: UIColor
+        var pathCoefficient: Float
+        var separationForce: SCNVector3
+        var leafProgress: Float
+        var stem: StemPath?
+        var sAlongStem: Float
+        var wrapAngle: Float
+        var forwardDir: Float
+        var lastPos: SCNVector3
+        var stuckTime: Float
+        var stuckCount: Int
+        var lastLeafID: Int?
+        var leafCooldown: Float
+        var dormantTimer: Float
+        // NEW relocation smoothing
+        var relocating: Bool
+        var relocationStart: SCNVector3
+        var relocationEnd: SCNVector3
+        var relocationT: Float
+        var relocationDuration: Float
+        var pendingStemID: Int?
+        var pendingSAlongStem: Float?
+        // NEW: asynchronous dormancy cycle countdown (time until next rest period)
+        var sleepCountdown: Float
+        // NEW: Enhanced collision avoidance
+        var velocitySmoothing: SCNVector3
+        var separationSmoothing: SCNVector3
+        var collisionAvoidanceRadius: Float
+        var repulsionCoefficient: Float
+        var lastSeparationForce: SCNVector3
+        var conflictResolutionTimer: Float
+        var conflictResolutionDirection: SCNVector3
+    }
+    private var ladybirds: [Ladybird] = []
+    private let ladybirdCount = 5
+    private let ladybirdBaseSpeed: Float = 0.13 // was 0.10 (slightly faster baseline for stem travel)
+    private let ladybirdLatchDuration: Float = 15.0 // max time on a leaf
+    private let ladybirdMunchRate: Float = 0.5 // was 20.3 (slower eating per user feedback)
+    // NEW: debug logging cadence
+    private var ladybirdLogAccumulator: Float = 0
+    // NEW: performance flags
+    private let enableLadybirdDebugLog = false
+    // Throttling counters
+    private var ladybirdFrameCounter: Int = 0 // for every-2nd-frame separation/targeting
+    // Pending leaf removals (when fully eaten / detached)
+    private var pendingLeafRemoval: [AnchoredLeaf] = []
+    private var pendingLeafRemovalIDs: Set<Int> = []
+    
+    // MARK: - Scene Setup
+    init(scene: SCNScene, scnView: SCNView?) {
+        self.scene = scene
+        self.scnView = scnView
+        setup()
+    }
+    
+    private func setup() {
+        // Ensure rootNode attached once
+        if rootNode.parent == nil { scene.rootNode.addChildNode(rootNode) }
+        if Self.leafMaterialPool.isEmpty { buildLeafMaterialPool() }
+        // Preserve transform across reset
+        let preservedPosition = rootNode.position
+        let preservedScale = rootNode.scale
+        // Clear children (not rootNode itself)
+        rootNode.enumerateChildNodes { node, _ in node.removeFromParentNode() }
+        leaves.removeAll(); anchoredLeaves.removeAll(); nextLeafID = 0; stemHeight = 0
+        stems.removeAll(); nextStemID = 0
+        ladybirds.removeAll()
+        // Disable legacy caterpillar when ladybirds present (keep var for API fallback)
+        caterpillar = nil
+        generateMainStemAndBranches()
+        buildStemGeometry()
+        // NEW: immediately mark initial geometry fully grown & activated
+        fullyGrowInitialStems()
+        spawnLadybirds() // NEW
+        traversalStem = mainStem
+        traversalDirection = 1
+        traversalHeadS = 0
+        wavePhase = 0
+        originalMainStemPlannedLength = mainStem?.totalLength ?? 0
+        configureFutureBranchThresholds()
+        seedInitialLeaves() // NEW
+        // Initialize random pool
+        if randPool.isEmpty { randPool = (0..<512).map { _ in Float.random(in: 0...1) }; randIndex = 0 }
+        // reapply preserved transform
+        rootNode.position = preservedPosition
+        rootNode.scale = preservedScale
+    }
+    
+    private func generateMainStemAndBranches() {
+        // Main stem: gentle upward with lateral drift
+        var pts: [SCNVector3] = []
+        let segmentCount = 14
+        var y: Float = 0
+        var pos = SCNVector3Zero
+        for i in 0...segmentCount {
+            let t = Float(i)/Float(segmentCount)
+            y += Float.random(in: 0.22...0.38)
+            let lateralRadius: Float = 0.6
+            let angle = t * 2.2 + Float.random(in: -0.2...0.2)
+            let r = lateralRadius * t * 0.5
+            let x = cos(angle) * r + Float.random(in: -0.1...0.1)
+            let z = sin(angle) * r + Float.random(in: -0.1...0.1)
+            pos = SCNVector3(x, y, z)
+            pts.append(pos)
+        }
+        let main = StemPath(id: nextStemID, isMain: true, controlPoints: pts, growthRate: 0.55, activateAtMainLength: 0, radius: stemRadius)
+        nextStemID += 1
+        stems.append(main)
+        // Branches: choose a few points along main (excluding very bottom & top)
+        let branchCount = 3
+        for b in 0..<branchCount {
+            guard let m = mainStem else { break }
+            let mLen = approximatePathLength(m.controlPoints)
+            let attachT = Float.random(in: 0.25...0.75)
+            let attachIndex = Int(round(attachT * Float(m.controlPoints.count-2)))
+            let attachPt = m.controlPoints[attachIndex]
+            // branch direction outward from stem center
+            let outward = (attachPt - SCNVector3(0, attachPt.y, 0)).normalized()
+            let branchLen: Float = Float.random(in: 1.9...3.4) // EXTENDED LENGTH
+            let steps = 6
+            var bPts: [SCNVector3] = [attachPt]
+            var dir = (outward + randomUnitVectorFlat() * 0.3).normalized()
+            var current = attachPt
+            for i in 1...steps {
+                // let stepFrac = Float(i)/Float(steps)
+                // upward slight
+                dir = (dir + SCNVector3(0, 0.15, 0)).normalized()
+                current = current + dir * (branchLen / Float(steps))
+                // slight weight-induced downward sag proportional to progress
+                let sag = -Float(i) / Float(steps) * Float.random(in: 0.02...0.06)
+                current.y += sag
+                bPts.append(current)
+            }
+            let branch = StemPath(id: nextStemID, isMain: false, controlPoints: bPts, growthRate: 0.65, activateAtMainLength: attachT * mLen * 0.85, radius: stemRadius * 0.6)
+            nextStemID += 1
+            stems.append(branch)
+        }
+    }
+    
+    private func approximatePathLength(_ pts: [SCNVector3]) -> Float { guard pts.count > 1 else { return 0 }; var sum: Float = 0; for i in 1..<pts.count { sum += (pts[i]-pts[i-1]).length() }; return sum }
+    
+    private func buildStemGeometry() {
+        for stem in stems {
+            var segments: [StemSegment] = []
+            var cumulative: Float = 0
+            for i in 1..<stem.controlPoints.count {
+                let a = stem.controlPoints[i-1]
+                let b = stem.controlPoints[i]
+                let v = b - a
+                let len = v.length()
+                let extra = min(stemSegmentExtraLength, len * 0.35)
+                let cyl = SCNCylinder(radius: CGFloat(stem.isMain ? stemRadius : stemRadius*0.6), height: CGFloat(len + extra)) // extended
+                let m = SCNMaterial(); m.diffuse.contents = UIColor(hue: stem.isMain ? 0.27 : 0.26, saturation: 0.55, brightness: stem.isMain ? 0.36 : 0.33, alpha: 1); m.lightingModel = .physicallyBased; cyl.materials=[m]
+                let node = SCNNode(geometry: cyl)
+                node.name = "gp_stemseg_\(stem.id)_\(i-1)"
+                // orient cylinder (default y-axis) along v
+                let dir = (v/len)
+                let up = SCNVector3(0,1,0)
+                var axis = SCNVector3.cross(up, dir)
+                var angle: Float = acos( max(-1,min(1, SCNVector3.dot(up, dir))) )
+                if axis.length() < 0.0001 { axis = SCNVector3(1,0,0); if abs(dir.y - 1) < 0.0001 { angle = 0 } }
+                node.rotation = SCNVector4(axis.x, axis.y, axis.z, angle)
+                node.position = (a + b) * 0.5
+                // growth: set initial scale y to 0
+                node.scale = SCNVector3(1, 0.0001, 1)
+                rootNode.addChildNode(node)
+                segments.append(StemSegment(start: a, end: b, length: len, node: node))
+                cumulative += len
+                if i >= 2 { addJointIfNeeded(stem: stem, atIndex: i-1) }
+            }
+            stem.segments = segments
+            stem.totalLength = cumulative
+            stem.grownLength = 0
+            stem.activated = stem.isMain
+        }
+    }
+    
+    private func fullyGrowInitialStems() { // NEW: make initial stems fully grown visually
+        for stem in stems {
+            stem.grownLength = stem.totalLength
+            stem.activated = true
+            for seg in stem.segments { seg.node.scale.y = 1 }
+        }
+    }
+    
+    private func updateStems(deltaTime: Float) {
+        guard let main = mainStem else { return }
+        if stemsStatic {
+            // Ensure all stems appear fully grown; no dynamic growth
+            for stem in stems { stem.grownLength = stem.totalLength; for seg in stem.segments { seg.node.scale.y = 1 } }
+            return
+        }
+        extendMainStemIfNeeded(main: main)
+        // Update activation for branches
+        let mainGrown = main.grownLength
+        for stem in stems where !stem.isMain { if !stem.activated && mainGrown >= stem.activateAtMainLength { stem.activated = true } }
+        // Grow each active stem
+        for stem in stems where stem.activated {
+            stem.grownLength = min(stem.totalLength, stem.grownLength + stem.growthRate * deltaTime)
+            // Update segment visual growth
+            var acc: Float = 0
+            for seg in stem.segments {
+                if acc >= stem.grownLength { // not yet started
+                    seg.node.scale.y = 0.0001
+                } else if acc + seg.length <= stem.grownLength { // fully grown
+                    seg.node.scale.y = 1
+                } else { // partial
+                    let remaining = stem.grownLength - acc
+                    let frac = max(0.001, remaining / seg.length)
+                    seg.node.scale.y = frac
+                }
+                acc += seg.length
+            }
+        }
+        spawnDynamicBranchesIfNeeded()
+    }
+    
+    private func pointAndTangent(on stem: StemPath, atS s: Float) -> (pos: SCNVector3, tangent: SCNVector3) {
+        var remaining = s
+        for seg in stem.segments { if remaining <= seg.length { let t = max(0,min(1, remaining/seg.length)); let pos = seg.start + (seg.end - seg.start) * t; let tan = (seg.end - seg.start).normalized(); return (pos, tan) } else { remaining -= seg.length } }
+        if let last = stem.segments.last { return (last.end, (last.end - last.start).normalized()) }
+        return (SCNVector3Zero, SCNVector3(0,1,0))
+    }
+    
+    private func seedInitialLeaves() {
+        guard let main = mainStem else { return }
+        let usable = min(main.totalLength * 0.7, max(0, main.totalLength - 0.2))
+        guard usable > 0 else { return }
+        for _ in 0..<initialSeedLeaves { let s = Float.random(in: 0.05...usable); spawnLeaf(on: main, atS: s, forceImmediate: true) }
+        for leaf in anchoredLeaves {
+            leaf.growth = 1
+            // Immediately reveal all active cells (no grow-in animation for initial fully-grown plant)
+            for cell in leaf.cells where cell.active {
+                cell.revealed = true
+                cell.node.scale = SCNVector3(1,1,1)
+                cell.node.opacity = 1
+            }
+        }
+    }
+    // Generic leaf spawn helper (horizontal leaves for visibility)
+    private func spawnLeaf(on stem: StemPath, atS s: Float, forceImmediate: Bool = false) {
+        guard anchoredLeaves.count < maxLeaves else { return }
+        let (anchorPos, tangent) = pointAndTangent(on: stem, atS: s)
+        var horizTangent = SCNVector3(tangent.x, 0, tangent.z)
+        if horizTangent.length() < 0.001 { horizTangent = SCNVector3(0,0,1) }
+        var outward = SCNVector3(-horizTangent.z, 0, horizTangent.x).normalized()
+        // random yaw tweak
+        let yaw = Float.random(in: -0.6...0.6)
+        let c = cos(yaw), si = sin(yaw)
+        outward = SCNVector3(outward.x * c - outward.z * si, 0, outward.x * si + outward.z * c).normalized()
+        let sizeRoll = Float.random(in: 0...1)
+        let length: Float
+        if sizeRoll < 0.35 { length = Float.random(in: 0.55...0.9) } // small
+        else if sizeRoll < 0.80 { length = Float.random(in: 0.9...1.8) } // medium
+        else { length = Float.random(in: 1.8...2.5) } // large
+        let width = length * Float.random(in: 0.28...0.50)
+        let leaf = AnchoredLeaf(id: nextLeafID, angle: 0, maxLength: length, maxWidth: width, stemID: stem.id, anchorS: s, outwardDir: outward, upDir: SCNVector3(0,1,0), anchorPos: anchorPos)
+        nextLeafID += 1
+        rootNode.addChildNode(leaf.container)
+        buildLeafCells(for: leaf)
+        if forceImmediate { leaf.growth = 1 }
+        anchoredLeaves.append(leaf)
+    }
+    
+    private func trySpawnLeaf(deltaTime: Float) {
+        leafSpawnAccumulator += deltaTime
+        let interval = anchoredLeaves.isEmpty ? leafSpawnInterval * 0.5 : leafSpawnInterval
+        guard leafSpawnAccumulator >= interval else { return }
+        leafSpawnAccumulator = 0
+        guard anchoredLeaves.count < maxLeaves else { return }
+        let grownStems = stems.filter { $0.activated && $0.grownLength > $0.totalLength * 0.10 }
+        guard !grownStems.isEmpty else { return }
+        let batch = Int.random(in: 1...2)
+        for _ in 0..<batch where anchoredLeaves.count < maxLeaves {
+            guard let stem = grownStems.randomElement() else { break }
+            let s = Float.random(in: 0.04...max(0.05, stem.grownLength - 0.05))
+            spawnLeaf(on: stem, atS: s)
+        }
+    }
+    
+    private func buildLeafMaterialPool() {
+        Self.leafMaterialPool.removeAll(keepingCapacity: true)
+        for i in 0..<leafMaterialPoolSize {
+            let m = SCNMaterial()
+            let hue = 0.33 + CGFloat(i) / CGFloat(max(1, leafMaterialPoolSize-1)) * 0.04
+            m.diffuse.contents = UIColor(hue: hue, saturation: 0.55, brightness: 0.60 + CGFloat(i)/CGFloat(leafMaterialPoolSize) * 0.07, alpha: 1)
+            m.isDoubleSided = true
+            m.lightingModel = .physicallyBased
+            Self.leafMaterialPool.append(m)
+        }
+    }
+    
+    private func buildLeafCells(for leaf: AnchoredLeaf) {
+        let a = leaf.maxLength
+        let width = leaf.maxWidth
+        let b = width/2
+        for j in 0..<leafRows {
+            for i in 0..<leafCols {
+                let fx = (Float(i)+0.5)/Float(leafCols)
+                let baseTaper = pow(fx, 0.55); // shrink width near base
+                let widthScale = 0.25 + 0.75 * baseTaper // stronger rounding near stem
+                let localX = fx * a
+                let fz = (Float(j)+0.5)/Float(leafRows) - 0.5
+                let taperedZ = fz * width * widthScale
+                let nx = (localX - a*0.1)/(a*0.9)
+                let nzNorm = taperedZ / (b * widthScale)
+                let r2 = nx*nx + nzNorm*nzNorm
+                let active = (nx >= 0 && r2 <= 1.0)
+                let rNorm = min(1, sqrt(max(0,r2)))
+                let plane = SCNPlane(width: CGFloat(cellSize*1.05), height: CGFloat(cellSize*1.05))
+                if active, !Self.leafMaterialPool.isEmpty {
+                    let idx = (i * 7 + j * 3 + leaf.id * 5) % Self.leafMaterialPool.count
+                    plane.materials = [Self.leafMaterialPool[idx]]
+                } else {
+                    let clear = SCNMaterial(); clear.diffuse.contents = UIColor.clear; clear.isDoubleSided = true; plane.materials=[clear]
+                }
+                let node = SCNNode(geometry: plane)
+                let tipSag = a * 0.05
+                let edgeSag = width * 0.03 * widthScale
+                let midRidge = (1 - pow(abs(fz)/0.5, 1.6)) * 0.012 * a * widthScale
+                let ySag = -fx*fx * tipSag - pow(abs(fz*2), 1.4) * edgeSag + midRidge
+                node.position = SCNVector3(localX, ySag, taperedZ)
+                node.eulerAngles.x = -.pi/2
+                node.scale = SCNVector3(0.01,0.01,0.01)
+                node.opacity = 0
+                leaf.container.addChildNode(node)
+                let cell = LeafCell(node: node, active: active, xNorm: fx, rNorm: rNorm)
+                leaf.cells.append(cell)
+                if active { leaf.activeCells.append(cell) }
+            }
+        }
+        leaf.uneatenActiveCount = leaf.activeCells.count
+        // NEW: build sorted-by-x cache (global ordering)
+        leaf.activeCellsSortedByX = leaf.activeCells.sorted { $0.node.position.x < $1.node.position.x }
+        // NEW: build perimeter-first ordering (outer edge inward). Use rNorm descending so outer (near 1) first
+        leaf.activeCellsSortedByPerimeter = leaf.activeCells.sorted { (lhs, rhs) in
+            if abs(lhs.rNorm - rhs.rNorm) > 0.0001 { return lhs.rNorm > rhs.rNorm }
+            // tie-breaker: further in x first to mix pattern slightly
+            return lhs.node.position.x > rhs.node.position.x
+        }
+    }
+    
+    private func revealCells() { // optimized: only iterate activeCells
+        for leaf in anchoredLeaves where leaf.uneatenActiveCount > 0 { // skip depleted
+            let g = leaf.growth
+            for cell in leaf.activeCells where !cell.revealed && g >= cell.xNorm {
+                cell.revealed = true
+                cell.node.runAction(.group([.scale(to: 1.0, duration: 0.6), .fadeIn(duration: 0.6)]))
+            }
+        }
+    }
+    
+    // MARK: - Update Loop
+    func update(deltaTime: Float) {
+        updateStems(deltaTime: deltaTime)
+        // windTime removed
+        for leaf in anchoredLeaves { leaf.growth = min(1, leaf.growth + leafGrowthRate * deltaTime) }
+        trySpawnLeaf(deltaTime: deltaTime)
+        // leafTransformAccumulator removed; leaves keep base orientation
+        revealCells()
+        updateLadybirds(deltaTime: deltaTime)
+        // Process pending leaf removals (after ladybirds updated to avoid mid-loop mutation)
+        if !pendingLeafRemoval.isEmpty {
+            // Detach ladybirds from removed leaves
+            for i in 0..<ladybirds.count { if let tgt = ladybirds[i].targetLeaf, pendingLeafRemovalIDs.contains(tgt.id) { var lb = ladybirds[i]; lb.targetLeaf = nil; if lb.latchedLeaf != nil { lb.latchedLeaf = nil } ; ladybirds[i] = lb } else if let latched = ladybirds[i].latchedLeaf, pendingLeafRemovalIDs.contains(latched.id) { var lb = ladybirds[i]; lb.latchedLeaf = nil; lb.latchTimer = 0; ladybirds[i] = lb } }
+            // Remove containers & purge list
+            var surviving: [AnchoredLeaf] = []
+            let removalSet = pendingLeafRemovalIDs
+            for leaf in anchoredLeaves {
+                if removalSet.contains(leaf.id) {
+                    pendingNodeRemovals.append(leaf.container)
+                } else { surviving.append(leaf) }
+            }
+            anchoredLeaves = surviving
+            pendingLeafRemoval.removeAll(keepingCapacity: true)
+            pendingLeafRemovalIDs.removeAll(keepingCapacity: true)
+        }
+        // Flush batched removals
+        if !pendingNodeRemovals.isEmpty {
+            for n in pendingNodeRemovals { n.removeAllActions(); n.removeFromParentNode() }
+            pendingNodeRemovals.removeAll(keepingCapacity: true)
+        }
+    }
+    
+    private func cellsNear(_ center: SCNVector3, radius: Float) -> [LeafCell] { // early-out using leaf bounds + scratch reuse
+        let r2 = radius*radius
+        cellQueryScratch.removeAll(keepingCapacity: true)
+        for leaf in anchoredLeaves where leaf.uneatenActiveCount > 0 {
+            let leafWorld = leaf.container.presentation.worldPosition
+            let approxRad = leaf.maxLength * 0.6
+            let dxl = leafWorld.x - center.x; let dyl = leafWorld.y - center.y; let dzl = leafWorld.z - center.z
+            let dist2Leaf = dxl*dxl + dyl*dyl + dzl*dzl
+            let maxReach = approxRad + radius
+            if dist2Leaf > maxReach*maxReach { continue }
+            for cell in leaf.activeCells where !cell.eaten && cell.revealed {
+                let wp = cell.node.presentation.worldPosition
+                let dx = wp.x - center.x; let dy = wp.y - center.y; let dz = wp.z - center.z
+                if dx*dx + dy*dy + dz*dz <= r2 { cellQueryScratch.append(cell) }
+            }
+        }
+        return cellQueryScratch
+    }
+    
+    private func eatCluster(at pos: SCNVector3) {
+        let cells = cellsNear(pos, radius: biteRadius * scaleMultiplier)
+        guard !cells.isEmpty else { return }
+        for c in cells where !c.eaten {
+            c.eaten = true
+            if let parentContainer = c.node.parent, let leaf = anchoredLeaves.first(where: { $0.container === parentContainer }) {
+                leaf.uneatenActiveCount -= 1
+                applyLeafEatenVisuals(leaf)
+            }
+            c.node.runAction(.sequence([.group([.scale(to: 0.05, duration: 0.25), .fadeOut(duration: 0.25)]), .removeFromParentNode()]))
+        }
+    }
+    
+    // MARK: - LifeformSimulation
+    func reset() { setup() }
+    
+    // MARK: - Public tracking
+    func segmentCount(caterpillar index: Int) -> Int { // treat each ladybird as one segment for tracking
+        if !ladybirds.isEmpty { return index == 0 ? ladybirds.count : 0 }
+        return index == 0 ? caterpillar?.segments.count ?? 0 : 0
+    }
+    func projectedFirstCaterpillarSegmentXY127(segment: Int) -> (x: Int, y: Int)? { // map segment to ladybird body if present
+        if !ladybirds.isEmpty {
+            guard segment >= 0, segment < ladybirds.count, let view = scnView else { return nil }
+            let p = view.projectPoint(ladybirds[segment].node.presentation.worldPosition)
+            if p.x.isNaN || p.y.isNaN { return nil }
+            let w = max(view.bounds.width, 1); let h = max(view.bounds.height, 1)
+            let x = Int(round(min(max(CGFloat(p.x), 0), w) / w * 127))
+            let yView = h - CGFloat(p.y); let y = Int(round(min(max(yView, 0), h) / h * 127))
+            return (x,y)
+        }
+        guard segment >= 0, let cat = caterpillar, segment < cat.segments.count, let view = scnView else { return nil }
+        let p = view.projectPoint(cat.segments[segment].node.presentation.worldPosition)
+        if p.x.isNaN || p.y.isNaN { return nil }
+        let w = max(view.bounds.width, 1); let h = max(view.bounds.height, 1)
+        let x = Int(round(min(max(CGFloat(p.x), 0), w) / w * 127))
+        let yView = h - CGFloat(p.y); let y = Int(round(min(max(yView, 0), h) / h * 127))
+        return (x,y)
+    }
+    
+    // MARK: - Dynamic controls
+    func setScaleMultiplier(_ v: Float) {
+        let clamped = max(0.3, min(3.0, v))
+        guard abs(clamped - scaleMultiplier) > 0.0001 else { return }
+        scaleMultiplier = clamped
+        if !ladybirds.isEmpty { updateLadybirdScales(); return }
+        guard var cat = caterpillar else { return }
+        cat.baseSpacing = baseSegmentSpacing * scaleMultiplier
+        if let stem = traversalStem {
+            for i in 0..<cat.segments.count {
+                let sParam = traversalHeadS - cat.baseSpacing * Float(i)
+                let clampedS = max(0, min(stem.grownLength, sParam))
+                let (p, tan) = pointAndTangent(on: stem, atS: clampedS)
+                var radial = SCNVector3(p.x, 0, p.z)
+                if radial.length() < 0.0001 { radial = SCNVector3(1,0,0) }
+                radial = radial.normalized()
+                // ensure radial roughly perpendicular to tangent; if nearly parallel fallback to cross
+                let dp = abs(SCNVector3.dot(radial, tan.normalized()))
+                if dp > 0.9 { radial = SCNVector3.cross(tan, SCNVector3(0,1,0)).normalized() }
+                let segRadius: Float = (i==0 ? 0.07 : 0.055) * scaleMultiplier
+                let surfacePos = p + radial * (stem.radius + segRadius * 0.65)
+                cat.segments[i].position = surfacePos
+            }
+        } else {
+            let headPos = cat.segments[0].position
+            for s in 1..<cat.segments.count { let dir = cat.heading; cat.segments[s].position = headPos - dir * (Float(s) * cat.baseSpacing) }
+        }
+        for (i, seg) in cat.segments.enumerated() { if let body = seg.node.childNodes.first(where: { $0.name == "body" }), let sphere = body.geometry as? SCNSphere { sphere.radius = CGFloat((i==0 ? 0.07 : 0.055) * scaleMultiplier) } }
+        caterpillar = cat
+    }
+    func setSpeedMultiplier(_ v: Float) { speedMultiplier = max(0.1, min(5.0, v)) }
+    func currentScaleMultiplier() -> Float { scaleMultiplier }
+    func currentSpeedMultiplier() -> Float { speedMultiplier }
+    
+    // MARK: - Gesture / external controls
+    func translate(dx: Float, dy: Float, dz: Float) { rootNode.position.x += dx; rootNode.position.y += dy; rootNode.position.z += dz }
+    func setGlobalScale(_ s: Float) { let clamped = max(0.1, min(5.0, s)); globalScale = clamped; rootNode.scale = SCNVector3(clamped, clamped, clamped) }
+    func currentGlobalScale() -> Float { globalScale }
+    // NEW: Rotation control
+    func setRotationAngle(_ angleDegrees: Float) {
+        let radians = angleDegrees * .pi / 180.0
+        rootNode.eulerAngles.y = radians
+    }
+    
+    // MARK: - Ladybird System
+    private func spawnLadybirds() {
+        ladybirds.removeAll()
+        let paletteCount = palette.count
+        // Spawn directly on random stems instead of a ground circle
+        let candidateStems = stems.filter { $0.grownLength > 0.2 }
+        for i in 0..<ladybirdCount {
+            let color = palette[i % paletteCount]
+            let node = SCNNode()
+            node.name = "gp_ladybird_\(i)"
+            // body
+            let shell = SCNSphere(radius: 0.045 * CGFloat(scaleMultiplier))
+            let shellMat = SCNMaterial(); shellMat.diffuse.contents = color; shellMat.lightingModel = .physicallyBased; shell.materials=[shellMat]
+            let shellNode = SCNNode(geometry: shell); shellNode.name = "body"; node.addChildNode(shellNode)
+            // head
+            let head = SCNSphere(radius: 0.022 * CGFloat(scaleMultiplier))
+            let headMat = SCNMaterial(); headMat.diffuse.contents = UIColor.black; headMat.lightingModel = .physicallyBased; head.materials=[headMat]
+            let headNode = SCNNode(geometry: head); headNode.position = SCNVector3(0, -0.03 * scaleMultiplier, 0.032 * scaleMultiplier); headNode.name = "head"; node.addChildNode(headNode)
+            // dots
+            for d in 0..<6 {
+                let dot = SCNSphere(radius: 0.008 * CGFloat(scaleMultiplier))
+                let dm = SCNMaterial(); dm.diffuse.contents = UIColor.black; dot.materials=[dm]
+                let dn = SCNNode(geometry: dot)
+                let angle = Float.pi * (Float(d)/6.0) + 0.2 * (d % 2 == 0 ? 1 : -1)
+                let x = cos(angle)*0.022*scaleMultiplier; let z = sin(angle)*0.032*scaleMultiplier
+                dn.position = SCNVector3(x,0.012*scaleMultiplier,z); dn.name = "dot_\(d)"; node.addChildNode(dn)
+            }
+            // split
+            let split = SCNCylinder(radius: 0.004 * CGFloat(scaleMultiplier), height: 0.045 * CGFloat(scaleMultiplier))
+            let sm = SCNMaterial(); sm.diffuse.contents = UIColor.black; split.materials=[sm]
+            let sn = SCNNode(geometry: split); sn.eulerAngles.x = .pi/2; sn.name = "split"; node.addChildNode(sn)
+            // Choose a random stem & param position
+            let stem = candidateStems.randomElement() ?? mainStem
+            let grown = stem?.grownLength ?? 1
+            let sParam = (stem == nil ? 0 : Float.random(in: 0.05...max(0.06, grown * 0.95)))
+            var position = SCNVector3Zero
+            var wrapAngle = Float.random(in: 0..<(2*Float.pi))
+            if let stemUnwrapped = stem {
+                let (centerPos, tangent) = pointAndTangent(on: stemUnwrapped, atS: sParam)
+                position = surfacePosition(on: stemUnwrapped, center: centerPos, tangent: tangent, wrapAngle: wrapAngle, extraOffset: 0.045 * scaleMultiplier)
+            }
+            node.position = position
+            rootNode.addChildNode(node)
+            ladybirds.append(Ladybird(node: node, position: position, direction: randomUnitVectorFlat(), speed: ladybirdBaseSpeed * (0.8 + Float.random(in:0...0.4)), targetLeaf: nil, latchedLeaf: nil, latchTimer: 0, munchAccumulator: 0, wanderTimer: Float.random(in:0.5...2), color: color, pathCoefficient: Float.random(in:0.7...1.3), separationForce: SCNVector3Zero, leafProgress: 0, stem: stem, sAlongStem: sParam, wrapAngle: wrapAngle, forwardDir: Bool.random() ? 1 : -1, lastPos: position, stuckTime: 0, stuckCount: 0, lastLeafID: nil, leafCooldown: 0, dormantTimer: 0, relocating: false, relocationStart: position, relocationEnd: position, relocationT: 0, relocationDuration: 0, pendingStemID: nil, pendingSAlongStem: nil, sleepCountdown: Float.random(in: 6.0...14.0), velocitySmoothing: SCNVector3Zero, separationSmoothing: SCNVector3Zero, collisionAvoidanceRadius: 0.12 * scaleMultiplier, repulsionCoefficient: Float.random(in: 0.8...1.2), lastSeparationForce: SCNVector3Zero, conflictResolutionTimer: 0, conflictResolutionDirection: randomUnitVectorFlat()))
+        }
+        ladybirdLogAccumulator = 0
+    }
+    
+    private func updateLadybirds(deltaTime dt:Float){
+        let doHeavy = (ladybirdFrameCounter & 1) == 0 // every 2nd frame
+        
+        // Enhanced collision avoidance system - replaces simple separation
+        if doHeavy {
+            updateLadybirdCollisionAvoidance(deltaTime: dt)
+        }
+        
+        for i in 0..<ladybirds.count {
+            var lb = ladybirds[i]; func clampS(){ if let stem=lb.stem { lb.sAlongStem = max(0, min(stem.grownLength, lb.sAlongStem)) } }
+            
+            // Update collision avoidance timers and smoothing
+            lb.conflictResolutionTimer = max(0, lb.conflictResolutionTimer - dt)
+            
+            // Smooth velocity and separation forces to prevent jumping
+            let velocityDamping: Float = 0.85
+            let separationDamping: Float = 0.75
+            lb.velocitySmoothing = lb.velocitySmoothing * velocityDamping
+            lb.separationSmoothing = lb.separationSmoothing * separationDamping + lb.separationForce * (1.0 - separationDamping)
+            
+            lb.leafCooldown = max(0, lb.leafCooldown - dt * speedMultiplier)
+            // NEW: asynchronous dormancy countdown (only when not latched or already dormant)
+            if lb.dormantTimer <= 0 && lb.latchedLeaf == nil {
+                lb.sleepCountdown -= dt * speedMultiplier
+                if lb.sleepCountdown <= 0 {
+                    lb.dormantTimer = Float.random(in: 2.5...5.0)
+                    lb.sleepCountdown = Float.random(in: 2.0...6.0)
+                }
+            }
+            
+            // Handle dormant timer countdown
+            if lb.dormantTimer > 0 {
+                lb.dormantTimer -= dt * speedMultiplier
+            }
+            
+            // --- GUARD: If dormant, use only gentle breathing with minimal separation ---
+            if lb.dormantTimer > 0 {
+                if let stem = lb.stem { // slight breathing stay anchored
+                    let (centerPos, tangent) = pointAndTangent(on: stem, atS: lb.sAlongStem)
+                    lb.wrapAngle += dt * 0.15
+                    let basePos = surfacePosition(on: stem, center: centerPos, tangent: tangent, wrapAngle: lb.wrapAngle, extraOffset: 0.045 * scaleMultiplier)
+                    // Apply only gentle separation force during dormancy
+                    lb.position = basePos + lb.separationSmoothing * 0.1
+                    lb.node.position = lb.position
+                }
+                ladybirds[i] = lb
+                continue // skip movement/wander/anti-stuck
+            }
+            
+            // --- GUARD: If latched, minimal separation influence ---
+            if let leaf = lb.latchedLeaf, !isLeafDepleted(leaf) {
+                let cellsAll = leaf.activeCellsSortedByPerimeter
+                if !cellsAll.isEmpty {
+                    let total = cellsAll.count
+                    let progressionUnitsPerSec = leafProgressFactor * lb.speed * lb.pathCoefficient * speedMultiplier // UPDATED factor
+                    lb.leafProgress = min(1.0, lb.leafProgress + (progressionUnitsPerSec * dt))
+                    var idx = min(Int(lb.leafProgress * Float(total)), total - 1)
+                    while idx < total && cellsAll[idx].eaten { idx += 1 }
+                    if idx >= total { lb.latchTimer = 0 } else {
+                        let cell = cellsAll[idx]
+                        let localPos = leaf.container.presentation.convertPosition(cell.node.position, to: rootNode)
+                        // Smooth position update with minimal separation influence
+                        let targetPos = localPos + leaf.outwardDir * 0.02 + lb.separationSmoothing * 0.15
+                        lb.position = lb.position * 0.6 + targetPos * 0.4
+                        lb.node.position = lb.position
+                        lb.munchAccumulator += dt * ladybirdMunchRate * speedMultiplier // uses reduced munch rate constant
+                        while lb.munchAccumulator >= 1.0 {
+                            lb.munchAccumulator -= 1.0
+                            if !cell.eaten {
+                                cell.eaten = true
+                                leaf.uneatenActiveCount -= 1
+                                if fastRandomUnit() < 0.7 { clusterEat(from: cell, in: leaf) } else { applyLeafEatenVisuals(leaf) }
+                                if performanceMode { pendingNodeRemovals.append(cell.node) } else { cell.node.runAction(.sequence([.group([.scale(to: 0.05, duration: 0.15), .fadeOut(duration: 0.15)]), .removeFromParentNode()])) }
+                            }
+                        }
+                    }
+                }
+                lb.latchTimer -= dt * speedMultiplier
+                if lb.latchTimer <= 0 || isLeafDepleted(leaf) || lb.leafProgress >= 1.0 {
+                    lb.lastLeafID = leaf.id
+                    lb.leafCooldown = 1.6 + Float.random(in: 0.4...1.2)
+                    lb.latchedLeaf = nil; lb.targetLeaf = nil; lb.latchTimer = 0; lb.leafProgress = 0
+                    lb.stem = stems.first(where: { $0.id == leaf.stemID }) ?? lb.stem
+                    lb.sAlongStem = leaf.anchorS; clampS()
+                }
+                ladybirds[i] = lb
+                continue // skip wander/anti-stuck
+            }
+            
+            // Store intended movement for conflict resolution
+            var intendedMovement = SCNVector3Zero
+            
+            // Throttled target acquisition
+            if doHeavy, lb.targetLeaf == nil || lb.targetLeaf?.uneatenActiveCount == 0 {
+                let occupied = Set(ladybirds.compactMap { $0.latchedLeaf })
+                lb.targetLeaf = findBestLeafTarget(for: lb, excluding: occupied, cooldownLeafID: lb.lastLeafID, cooldownActive: lb.leafCooldown > 0)
+                if lb.targetLeaf == nil {
+                    let anyAvailable = anchoredLeaves.contains { !$0.activeCells.isEmpty && !isLeafDepleted($0) && $0.growth >= 0.999 }
+                    if !anyAvailable { lb.dormantTimer = Float.random(in: 2.5...5.5) }
+                }
+                if let tgt = lb.targetLeaf, let tgtStem = stems.first(where:{ $0.id == tgt.stemID }) {
+                    if lb.stem?.id != tgtStem.id { lb.stem = tgtStem; lb.sAlongStem = min(tgtStem.grownLength, max(0, tgt.anchorS * Float.random(in:0.4...0.8))) }
+                }
+            }
+            
+            if let tgt = lb.targetLeaf, let stem = lb.stem, stem.grownLength > 0.05 {
+                let targetS = min(stem.grownLength, tgt.anchorS)
+                let deltaS = targetS - lb.sAlongStem
+                let stepS = lb.speed * speedMultiplier * lb.pathCoefficient * dt * stemTraversalFactorTarget // UPDATED multiplier
+                if abs(deltaS) <= stepS { lb.sAlongStem = targetS } else { lb.sAlongStem += (deltaS > 0 ? stepS : -stepS) }
+                clampS()
+                let (centerPos, tangent) = pointAndTangent(on: stem, atS: lb.sAlongStem)
+                lb.wrapAngle += dt * 0.38
+                let basePos = surfacePosition(on: stem, center: centerPos, tangent: tangent, wrapAngle: lb.wrapAngle, extraOffset: 0.045 * scaleMultiplier)
+                
+                // Apply smoothed collision avoidance
+                intendedMovement = basePos - lb.position
+                let finalPos = basePos + lb.separationSmoothing * lb.repulsionCoefficient
+                lb.position = lb.position * 0.7 + finalPos * 0.3 // Smooth position updates
+                lb.node.position = lb.position
+                
+                // Check latching conditions
+                let anchorLocal = rootNode.convertPosition(tgt.container.presentation.worldPosition, from: nil)
+                let distanceToAnchorCenter = (lb.position - anchorLocal).length()
+                let expectedRadial = (lb.stem?.radius ?? stemRadius) + 0.045 * scaleMultiplier
+                let radialVec = (lb.position - anchorLocal).length() > 0.0001 ? (lb.position - anchorLocal).normalized() : tgt.outwardDir
+                let radialAlignment = SCNVector3.dot(radialVec, tgt.outwardDir.normalized())
+                let hasRevealedCell = tgt.activeCells.contains { $0.revealed && !$0.eaten }
+                
+                // NEW: require fully grown leaf (growth ~1) before latching
+                if tgt.growth >= 0.999 && hasRevealedCell && abs(deltaS) < 0.035 && radialAlignment > 0.4 && distanceToAnchorCenter > expectedRadial * 0.45 && distanceToAnchorCenter < expectedRadial * 1.55 {
+                    let alreadyLatched = ladybirds.contains { $0.latchedLeaf === tgt }
+                    if !alreadyLatched {
+                        // choose first revealed uneaten perimeter cell if any (outer edge)
+                        if let cell = tgt.activeCellsSortedByPerimeter.first(where: { $0.revealed && !$0.eaten }) {
+                            let cellWorld = tgt.container.presentation.convertPosition(cell.node.position, to: rootNode)
+                            lb.position = cellWorld + tgt.outwardDir * 0.02
+                        } else if let cell = tgt.activeCellsSortedByX.first(where: { $0.revealed && !$0.eaten }) { // fallback
+                            let cellWorld = tgt.container.presentation.convertPosition(cell.node.position, to: rootNode)
+                            lb.position = cellWorld + tgt.outwardDir * 0.02
+                        } else {
+                            lb.position = anchorLocal + tgt.outwardDir * (expectedRadial * 0.9)
+                        }
+                        lb.node.position = lb.position
+                        lb.latchedLeaf = tgt; lb.latchTimer = 3.8 + Float.random(in: 1.0...2.5); lb.munchAccumulator = 0; lb.leafProgress = 0
+                        // Force others off this leaf
+                        for j in 0..<ladybirds.count where j != i {
+                            if ladybirds[j].targetLeaf === tgt || ladybirds[j].latchedLeaf === tgt {
+                                var other = ladybirds[j]
+                                other.targetLeaf = nil
+                                other.latchedLeaf = nil
+                                ladybirds[j] = other
+                            }
+                        }
+                    }
+                }
+            } else if lb.targetLeaf == nil { // Wander
+                if lb.stem == nil { lb.stem = mainStem; lb.sAlongStem = 0 }
+                if let stem = lb.stem, stem.grownLength > 0.05 {
+                    // Apply conflict resolution if active
+                    var moveDir = lb.forwardDir
+                    if lb.conflictResolutionTimer > 0 {
+                        // Use conflict resolution direction to break cycles
+                        let conflictInfluence = lb.conflictResolutionTimer / 2.0 // 2 second resolution period
+                        let stemTangent = pointAndTangent(on: stem, atS: lb.sAlongStem).tangent
+                        let conflictDot = SCNVector3.dot(lb.conflictResolutionDirection, stemTangent)
+                        moveDir = Float.random(in: 0...1) < conflictInfluence ? (conflictDot > 0 ? 1 : -1) : lb.forwardDir
+                    }
+                    
+                    lb.sAlongStem += moveDir * lb.speed * speedMultiplier * lb.pathCoefficient * dt * stemTraversalFactorWander // UPDATED multiplier
+                    if lb.sAlongStem <= 0 { lb.sAlongStem = 0; lb.forwardDir = 1 }
+                    if lb.sAlongStem >= stem.grownLength { lb.sAlongStem = stem.grownLength; lb.forwardDir = -1 }
+                    let (centerPos, tangent) = pointAndTangent(on: stem, atS: lb.sAlongStem)
+                    lb.wrapAngle += dt * 0.27
+                    let basePos = surfacePosition(on: stem, center: centerPos, tangent: tangent, wrapAngle: lb.wrapAngle, extraOffset: 0.045 * scaleMultiplier)
+                    
+                    // Apply smoothed collision avoidance
+                    intendedMovement = basePos - lb.position
+                    let finalPos = basePos + lb.separationSmoothing * lb.repulsionCoefficient
+                    lb.position = lb.position * 0.7 + finalPos * 0.3 // Smooth position updates
+                    lb.node.position = lb.position
+                } else {
+                    lb.wanderTimer -= dt
+                    if lb.wanderTimer <= 0 && doHeavy { lb.direction = randomUnitVectorFlat(); lb.wanderTimer = Float.random(in: 0.6...1.6) }
+                    
+                    // Apply conflict resolution to wander direction
+                    var wanderDir = lb.direction
+                    if lb.conflictResolutionTimer > 0 {
+                        let conflictInfluence = lb.conflictResolutionTimer / 2.0
+                        wanderDir = wanderDir * (1.0 - conflictInfluence) + lb.conflictResolutionDirection * conflictInfluence
+                        wanderDir = wanderDir.normalized()
+                    }
+                    
+                    intendedMovement = wanderDir * lb.speed * speedMultiplier * lb.pathCoefficient * dt
+                    let finalPos = lb.position + intendedMovement + lb.separationSmoothing * lb.repulsionCoefficient
+                    lb.position = lb.position * 0.8 + finalPos * 0.2 // Extra smooth for free wander
+                    lb.node.position = lb.position
+                }
+            }
+            
+            // Store velocity for smoothing
+            lb.velocitySmoothing = intendedMovement / dt
+            
+            // Simplified anti-stuck logic with conflict resolution
+            let prevPos = lb.lastPos
+            let moved = (lb.position - prevPos).length()
+            if moved < 0.0022 {
+                lb.stuckTime += dt
+            } else {
+                lb.stuckTime = 0; lb.stuckCount = 0
+            }
+            if lb.stuckTime > 0.55 {
+                // Instead of random jumps, initiate conflict resolution
+                if lb.conflictResolutionTimer <= 0 {
+                    lb.conflictResolutionTimer = 2.0 // 2 second resolution period
+                    lb.conflictResolutionDirection = randomUnitVectorFlat()
+                }
+                lb.stuckTime = 0; lb.stuckCount += 1
+                if lb.stuckCount > 3 {
+                    // Only as last resort, smoothly relocate
+                    if let stem = lb.stem {
+                        let newS = stem.grownLength * Float.random(in: 0.1...0.9)
+                        lb.sAlongStem = lb.sAlongStem * 0.7 + newS * 0.3 // Smooth transition
+                        clampS()
+                    }
+                    lb.conflictResolutionTimer = 3.0 // Extended resolution
+                    lb.stuckCount = 0
+                }
+            }
+            
+            lb.lastPos = lb.position
+            ladybirds[i] = lb
+        }
+        ladybirdLogAccumulator += dt
+        if enableLadybirdDebugLog, ladybirdLogAccumulator >= 0.75 { ladybirdLogAccumulator = 0; logRedLadybird() }
+        ladybirdFrameCounter &+= 1
+    }
+    
+    private func updateLadybirdCollisionAvoidance(deltaTime dt: Float) {
+        // Enhanced collision avoidance system to prevent jumping and cyclical conflicts
+        for i in 0..<ladybirds.count {
+            var lb = ladybirds[i]
+            var totalSeparationForce = SCNVector3Zero
+            var conflictCount = 0
+            
+            let myPos = lb.position
+            let myRadius = lb.collisionAvoidanceRadius
+            
+            for j in 0..<ladybirds.count where i != j {
+                let other = ladybirds[j]
+                let otherPos = other.position
+                let diff = myPos - otherPos
+                let distance = diff.length()
+                let minSeparation = myRadius + other.collisionAvoidanceRadius
+                
+                if distance < minSeparation && distance > 0.001 {
+                    let separationDir = diff.normalized()
+                    let separationStrength = (minSeparation - distance) / minSeparation
+                    
+                    // Scale by repulsion coefficients
+                    let repulsionFactor = (lb.repulsionCoefficient + other.repulsionCoefficient) * 0.5
+                    let force = separationDir * separationStrength * repulsionFactor * 0.15
+                    
+                    totalSeparationForce += force
+                    conflictCount += 1
+                    
+                    // Detect cyclical conflicts (opposing forces)
+                    let forceAlignment = SCNVector3.dot(force.normalized(), lb.lastSeparationForce.normalized())
+                    if forceAlignment < -0.7 && lb.conflictResolutionTimer <= 0 {
+                        // Opposing forces detected - initiate conflict resolution
+                        lb.conflictResolutionTimer = Float.random(in: 1.5...2.5)
+                        lb.conflictResolutionDirection = randomUnitVectorFlat()
+                    }
+                }
+            }
+            
+            // Dampen separation force to prevent oscillation
+            let dampingFactor = max(0.3, 1.0 - Float(conflictCount) * 0.2)
+            totalSeparationForce = totalSeparationForce * dampingFactor
+            
+            // Store for next frame comparison
+            lb.lastSeparationForce = totalSeparationForce
+            ladybirds[i].separationForce = totalSeparationForce
+        }
+    }
+    
+    private func logRedLadybird(){
+        guard enableLadybirdDebugLog else { return }
+        #if DEBUG
+        guard !ladybirds.isEmpty else { return }
+        let lb = ladybirds[0] // red (palette[0])
+        var parts: [String] = []
+        parts.append("red#0")
+        if let leaf = lb.latchedLeaf {
+            let total = leaf.activeCells.count
+            let eaten = total - leaf.uneatenActiveCount
+            parts.append("state=latched")
+            parts.append("leaf=\(leaf.id)")
+            parts.append(String(format: "prog=%.2f", lb.leafProgress))
+            parts.append(String(format: "eaten=%d/%d", eaten, total))
+            parts.append(String(format: "latchT=%.2f", lb.latchTimer))
+        } else if let leaf = lb.targetLeaf {
+            parts.append("state=target")
+            parts.append("leaf=\(leaf.id)")
+            parts.append(String(format: "s=%.2f", lb.sAlongStem))
+        } else {
+            parts.append("state=wander")
+            parts.append(String(format: "s=%.2f", lb.sAlongStem))
+        }
+        if lb.leafCooldown > 0 { parts.append(String(format: "cool=%.2f", lb.leafCooldown)) }
+        if lb.stuckTime > 0.2 { parts.append(String(format: "stuck=%.2f", lb.stuckTime)) }
+        Log.info(parts.joined(separator: " "))
+        #endif
+    }
+
+    // Helper: Find nearest point on any stem path to a given position
+    private func nearestStemPoint(to pos: SCNVector3) -> (stem: StemPath, s: Float, point: SCNVector3)? {
+        var bestStem: StemPath? = nil
+        var bestS: Float = 0
+        var bestPoint = SCNVector3Zero
+        var minDist: Float = Float.infinity
+        for stem in stems where stem.activated && stem.grownLength > 0.1 {
+            var acc: Float = 0
+            for seg in stem.segments {
+                let segLen = seg.length
+                let start = seg.start
+                let end = seg.end
+                let t = closestTOnSegment(from: pos, a: start, b: end)
+                let candidate = start + (end - start) * t
+                let dist = (candidate - pos).length()
+                if dist < minDist {
+                    minDist = dist
+                    bestStem = stem
+                    bestS = acc + segLen * t
+                    bestPoint = candidate
+                }
+                acc += segLen
+            }
+        }
+        if let stem = bestStem { return (stem, bestS, bestPoint) } else { return nil }
+    }
+    // Helper: Closest t on segment a-b to point p
+    private func closestTOnSegment(from p: SCNVector3, a: SCNVector3, b: SCNVector3) -> Float {
+        let ab = b - a
+        let abLen2 = ab.x*ab.x + ab.y*ab.y + ab.z*ab.z
+        if abLen2 < 0.00001 { return 0 }
+        let ap = p - a
+        let t = (ab.x*ap.x + ab.y*ap.y + ab.z*ap.z) / abLen2
+        return min(1, max(0, t))
+    }
+
+    // MARK: - Dynamic controls
+
+    private func configureFutureBranchThresholds() {
+        guard originalMainStemPlannedLength > 0 else { return }
+        let targetLength = originalMainStemPlannedLength * mainStemTargetLengthMultiplier
+        // plan extra branch thresholds every +0.5 original length beyond initial length
+        nextBranchPlannedThresholds = []
+        var t: Float = originalMainStemPlannedLength * 1.1
+        while t < targetLength * 0.95 { nextBranchPlannedThresholds.append(t); t += originalMainStemPlannedLength * 0.5 }
+        createdDynamicBranchCount = 0
+    }
+    private func extendMainStemIfNeeded(main: StemPath) {
+        let targetTotal = originalMainStemPlannedLength * mainStemTargetLengthMultiplier
+        guard main.totalLength < targetTotal else { return }
+        if main.grownLength > main.totalLength * 0.8 {
+            guard let last = main.controlPoints.last, main.controlPoints.count >= 2 else { return }
+            let prev = main.controlPoints[main.controlPoints.count - 2]
+            var dir = (last - prev).normalized()
+            if dir.length() < 0.001 { dir = SCNVector3(0,1,0) }
+            let addCount = Int.random(in: 2...3)
+            var newPoints: [SCNVector3] = []
+            var current = last
+            for i in 0..<addCount {
+                let upBias = SCNVector3(0, Float.random(in: 0.25...0.4), 0)
+                let lateral = randomUnitVectorFlat() * Float.random(in: 0.0...0.35) * (1 - Float(i)/Float(addCount))
+                let stepLen: Float = Float.random(in: 0.4...0.75)
+                let step = (dir * Float.random(in: 0.2...0.5) + upBias + lateral).normalized() * stepLen
+                current = current + step
+                newPoints.append(current)
+                dir = step.normalized()
+            }
+            for p in newPoints {
+                let a = main.controlPoints.last ?? last
+                let b = p
+                let v = b - a
+                let len = v.length()
+                let extra = min(stemSegmentExtraLength, len * 0.35)
+                let cyl = SCNCylinder(radius: CGFloat(stemRadius), height: CGFloat(len + extra))
+                let m = SCNMaterial(); m.diffuse.contents = UIColor(hue: 0.27, saturation: 0.55, brightness: 0.36, alpha: 1); m.lightingModel = .physicallyBased; cyl.materials=[m]
+                let node = SCNNode(geometry: cyl)
+                node.name = "gp_stemseg_\(main.id)_ext_\(main.segments.count)"
+                let dirNorm = (v/len)
+                let up = SCNVector3(0,1,0)
+                var axis = SCNVector3.cross(up, dirNorm)
+                var angle: Float = acos( max(-1,min(1, SCNVector3.dot(up, dirNorm))) )
+                if axis.length() < 0.0001 { axis = SCNVector3(1,0,0); if abs(dirNorm.y - 1) < 0.0001 { angle = 0 } }
+                node.rotation = SCNVector4(axis.x, axis.y, axis.z, angle)
+                node.position = (a + b) * 0.5
+                node.scale = SCNVector3(1, 0.0001, 1)
+                rootNode.addChildNode(node)
+                let seg = StemSegment(start: a, end: b, length: len, node: node)
+                main.segments.append(seg)
+                main.controlPoints.append(b)
+                main.totalLength += len
+                if main.controlPoints.count >= 3 { addJointIfNeeded(stem: main, atIndex: main.controlPoints.count - 2) }
+                if Float.random(in: 0...1) < 0.55 { let distAlong = max(0, main.totalLength - len * Float.random(in: 0.2...0.8)); spawnLeaf(on: main, atS: distAlong) }
+                if main.totalLength >= targetTotal { break }
+            }
+        }
+    }
+    private func spawnDynamicBranchesIfNeeded() {
+        guard let main = mainStem else { return }
+        guard originalMainStemPlannedLength > 0 else { return }
+        guard !nextBranchPlannedThresholds.isEmpty else { return }
+        // check thresholds
+        var spawnedIndices: [Int] = []
+        for (idx, threshold) in nextBranchPlannedThresholds.enumerated() {
+            if main.totalLength >= threshold { // spawn branch if not already beyond
+                // sample a point along main near proportion threshold
+                let t = threshold / main.totalLength
+                let sDist = t * main.totalLength * Float.random(in: 0.85...1.05)
+                let (anchorPos, tangent) = pointAndTangent(on: main, atS: max(0, min(main.totalLength * 0.95, sDist)))
+                var outward = SCNVector3.cross(tangent, SCNVector3(0,1,0))
+                if outward.length() < 0.1 { outward = SCNVector3.cross(tangent, SCNVector3(1,0,0)) }
+                outward = outward.normalized()
+                let branchLen: Float = Float.random(in: 1.8...3.2) // extended dynamic branch length
+                let steps = 5
+                var bPts: [SCNVector3] = [anchorPos]
+                var dir = (outward + randomUnitVectorFlat() * 0.25).normalized()
+                var current = anchorPos
+                for i in 1...steps {
+                    dir = (dir + SCNVector3(0, 0.12, 0)).normalized()
+                    current = current + dir * (branchLen / Float(steps))
+                    // downward sag for dynamic weight
+                    current.y += -Float(i)/Float(steps) * Float.random(in: 0.015...0.05)
+                    bPts.append(current)
+                }
+                let branch = StemPath(id: nextStemID, isMain: false, controlPoints: bPts, growthRate: 0.62, activateAtMainLength: main.grownLength * 0.95, radius: stemRadius * 0.55)
+                nextStemID += 1
+                stems.append(branch)
+                // build geometry for branch (initial invisible scale)
+                var segments: [StemSegment] = []
+                var cumulative: Float = 0
+                for i in 1..<bPts.count {
+                    let a = bPts[i-1]; let b = bPts[i]; let v = b - a; let len = v.length()
+                    let extra = min(stemSegmentExtraLength, len * 0.35)
+                    let cyl = SCNCylinder(radius: CGFloat(stemRadius * 0.55), height: CGFloat(len + extra)) // extended
+                    let m = SCNMaterial(); m.diffuse.contents = UIColor(hue: 0.26, saturation: 0.55, brightness: 0.34, alpha: 1); m.lightingModel = .physicallyBased; cyl.materials=[m]
+                    let node = SCNNode(geometry: cyl)
+                    node.name = "gp_stemseg_\(branch.id)_dyn_\(i-1)"
+                    let dirNorm = (v/len)
+                    let up = SCNVector3(0,1,0)
+                    var axis = SCNVector3.cross(up, dirNorm)
+                    var angle: Float = acos( max(-1,min(1, SCNVector3.dot(up, dirNorm))) )
+                    if axis.length() < 0.0001 { axis = SCNVector3(1,0,0); if abs(dirNorm.y - 1) < 0.0001 { angle = 0 } }
+                    node.rotation = SCNVector4(axis.x, axis.y, axis.z, angle)
+                    node.position = (a + b) * 0.5
+                    node.scale = SCNVector3(1, 0.0001, 1)
+                    rootNode.addChildNode(node) // CHANGED from scene.rootNode
+                    segments.append(StemSegment(start: a, end: b, length: len, node: node))
+                    if i >= 2 { addJointIfNeeded(stem: branch, atIndex: i-1) }
+                    cumulative += len
+                }
+                branch.segments = segments
+                branch.totalLength = cumulative
+                branch.grownLength = 0
+                branch.activated = false // will activate when main grown length passes threshold
+                spawnedIndices.append(idx)
+            }
+        }
+        // remove used thresholds
+        for i in spawnedIndices.sorted(by: >) { nextBranchPlannedThresholds.remove(at: i) }
+    }
+    private func maybeSwitchStem() {
+        // Choose a stem with uneaten revealed leaves; fall back to mainStem
+        let candidateStems = stems.filter { stem in
+            stem.grownLength > stem.totalLength * 0.3 && anchoredLeaves.contains { $0.stemID == stem.id && $0.cells.contains { $0.active && $0.revealed && !$0.eaten } }
+        }
+        if let newStem = candidateStems.randomElement() { traversalStem = newStem; traversalHeadS = min(newStem.grownLength * 0.9, max(0, newStem.grownLength * Float.random(in: 0.2...0.8))) }
+        else if traversalStem == nil { traversalStem = mainStem }
+    }
+    // NEW: Leaf targeting & depletion logic
+    private func isLeafDepleted(_ leaf: AnchoredLeaf) -> Bool {
+        return leaf.uneatenActiveCount == 0
+    }
+    private func uneatenCellCount(_ leaf: AnchoredLeaf) -> Int { // now O(1)
+        return leaf.uneatenActiveCount
+    }
+    private func updateLeafTargeting(deltaTime: Float) {
+        // If latched, hold until depleted
+        if let latched = latchedLeaf {
+            if isLeafDepleted(latched) { // release & force retarget soon
+                latchedLeaf = nil
+                currentLeafTarget = nil
+                leafRetargetTimer = 0
+            }
+            return
+        }
+        leafRetargetTimer -= deltaTime
+        if let tgt = currentLeafTarget, isLeafDepleted(tgt) { currentLeafTarget = nil }
+        if currentLeafTarget == nil || leafRetargetTimer <= 0 {
+            let candidates = anchoredLeaves.filter { !isLeafDepleted($0) && $0.growth >= 0.25 }
+            if candidates.isEmpty { currentLeafTarget = nil; leafRetargetTimer = retargetInterval; return }
+            var best: AnchoredLeaf? = nil
+            var bestScore: Float = -Float.infinity
+            let headPos = caterpillar?.segments.first?.position ?? SCNVector3Zero
+            for leaf in candidates {
+                let uneaten = Float(uneatenCellCount(leaf))
+                let worldAnchor = leaf.container.presentation.worldPosition
+                let dx = worldAnchor.x - headPos.x; let dy = worldAnchor.y - headPos.y; let dz = worldAnchor.z - headPos.z
+                let dist = sqrt(dx*dx + dy*dy + dz*dz)
+                let distScore = -dist * 0.45 // stronger preference for nearer leaves
+                let sameStemBonus: Float = (leaf.stemID == traversalStem?.id) ? 4.5 : 0.0
+                let growthBonus: Float = leaf.growth * 1.2
+                let score = uneaten * 0.55 + distScore + sameStemBonus + growthBonus + Float.random(in: -0.4...0.4)
+                if score > bestScore { bestScore = score; best = leaf }
+            }
+            currentLeafTarget = best
+            leafRetargetTimer = retargetInterval * Float.random(in: 0.6...1.2)
+            if let tgt = currentLeafTarget, let tgtStem = stems.first(where: { $0.id == tgt.stemID }) { traversalStem = tgtStem }
+        }
+        // Check latching condition (head near anchor)
+        if let tgt = currentLeafTarget, let head = caterpillar?.segments.first?.position {
+            let anchor = tgt.container.presentation.worldPosition
+            let dx = head.x - anchor.x; let dy = head.y - anchor.y; let dz = head.z - anchor.z
+            if (dx*dx + dy*dy + dz*dz) <= (arrivalThreshold * arrivalThreshold * 4) { // within threshold
+                latchedLeaf = tgt
+                latchedProgress = 0
+                munchAccumulator = 0
+            }
+        }
+        if traversalStem == nil { maybeSwitchStem() }
+    }
+
+    // Helper: Find best leaf target for a ladybird, excluding occupied leaves
+    private func findBestLeafTarget(for lb: Ladybird, excluding occupied: Set<AnchoredLeaf>, cooldownLeafID: Int?, cooldownActive: Bool) -> AnchoredLeaf? {
+        let candidates = anchoredLeaves.filter { leaf in
+            !isLeafDepleted(leaf) && leaf.growth >= 0.999 && !occupied.contains(leaf) && !(cooldownActive && leaf.id == cooldownLeafID)
+        }
+        guard !candidates.isEmpty else { return nil }
+        var best: AnchoredLeaf? = nil
+        var bestScore: Float = -Float.infinity
+        let lbPos = lb.position
+        for leaf in candidates {
+            let uneaten = Float(uneatenCellCount(leaf))
+            let anchorLocal = rootNode.convertPosition(leaf.container.presentation.worldPosition, from: nil)
+            let dist = (anchorLocal - lbPos).length()
+            let distScore = -dist * 0.5
+            let growthBonus: Float = leaf.growth * 1.1
+            let abundance = uneaten * 0.45
+            let jitter = Float.random(in: -0.35...0.35)
+            let score = abundance + distScore + growthBonus + jitter
+            if score > bestScore { bestScore = score; best = leaf }
+        }
+        return best
+    }
+
+    // Utility: random flat unit vector (XZ plane)
+    private func randomUnitVectorFlat() -> SCNVector3 {
+        let angle = Float.random(in: 0..<2*Float.pi)
+        return SCNVector3(cos(angle), 0, sin(angle))
+    }
+    // Utility: compute a point on the cylindrical surface of a stem around its tangent direction
+    private func surfacePosition(on stem: StemPath, center: SCNVector3, tangent: SCNVector3, wrapAngle: Float, extraOffset: Float) -> SCNVector3 {
+        let t = tangent.length() > 0.0001 ? tangent.normalized() : SCNVector3(0,1,0)
+        // Find an orthogonal basis (ortho, binormal) around tangent
+        var reference = SCNVector3(0,1,0)
+        if abs(SCNVector3.dot(reference.normalized(), t)) > 0.95 { reference = SCNVector3(1,0,0) }
+        var ortho = SCNVector3.cross(t, reference).normalized()
+        if ortho.length() < 0.0001 { ortho = SCNVector3(1,0,0) }
+        let binormal = SCNVector3.cross(t, ortho).normalized()
+        let radial = ortho * cos(wrapAngle) + binormal * sin(wrapAngle)
+        let radius = stem.radius + max(0, extraOffset)
+        return center + radial * radius
+    }
+    // Utility: update ladybird scales when scaleMultiplier changes
+    private func updateLadybirdScales() {
+        for lb in ladybirds {
+            if let body = lb.node.childNodes.first(where: { $0.name == "body" }), let sphere = body.geometry as? SCNSphere {
+                sphere.radius = CGFloat(0.045 * scaleMultiplier)
+            }
+            if let head = lb.node.childNodes.first(where: { $0.name == "head" }), let sphere = head.geometry as? SCNSphere {
+                sphere.radius = CGFloat(0.022 * scaleMultiplier)
+            }
+            // Update dots & split proportionally
+            for child in lb.node.childNodes where child.name?.starts(with: "dot_") == true {
+                if let s = (child.geometry as? SCNSphere) { s.radius = CGFloat(0.008 * scaleMultiplier) }
+            }
+            if let split = lb.node.childNodes.first(where: { $0.name == "split" }), let cyl = split.geometry as? SCNCylinder {
+                cyl.radius = 0.004 * CGFloat(scaleMultiplier)
+                cyl.height = 0.045 * CGFloat(scaleMultiplier)
+            }
+        }
+    }
+    private func applyLeafEatenVisuals(_ leaf: AnchoredLeaf) {
+        // Removed opacity dimming for performance & clarity.
+        if leaf.uneatenActiveCount == 0 { // schedule full leaf removal
+            if !pendingLeafRemovalIDs.contains(leaf.id) { pendingLeafRemoval.append(leaf); pendingLeafRemovalIDs.insert(leaf.id) }
+        }
+    }
+    private func clusterEat(from cell: LeafCell, in leaf: AnchoredLeaf) { // remove nearby cells for larger hole
+        let center = cell.node.position
+        var removed = 0
+        let maxExtra = performanceMode ? 4 : 3
+        let radius: Float = cellSize * 2.2
+        let r2 = radius * radius
+        var immediateNodes: [SCNNode] = []
+        for c in leaf.activeCells where !c.eaten && c !== cell && removed < maxExtra {
+            let p = c.node.position
+            let dx = p.x - center.x, dz = p.z - center.z
+            if dx*dx + dz*dz <= r2 && fastRandomUnit() < 0.65 {
+                c.eaten = true
+                leaf.uneatenActiveCount -= 1
+                removed += 1
+                // Defer removal (no animation in performanceMode or if cluster large)
+                if performanceMode || removed >= 2 { immediateNodes.append(c.node) }
+                else { c.node.runAction(.sequence([.group([.scale(to: 0.05, duration: 0.22), .fadeOut(duration: 0.22)]), .removeFromParentNode()])) }
+            }
+        }
+        if !immediateNodes.isEmpty { pendingNodeRemovals.append(contentsOf: immediateNodes) }
+        applyLeafEatenVisuals(leaf)
+    }
+    private func addJointIfNeeded(stem: StemPath, atIndex idx: Int) { // idx refers to controlPoints index of the joint position
+        guard idx > 0 && idx < stem.controlPoints.count-0 else { return }
+        let jointName = "gp_stemjoint_\(stem.id)_\(idx)"
+        if rootNode.childNode(withName: jointName, recursively: false) != nil { return }
+        let pPrev = stem.controlPoints[idx-1]
+        let pCurr = stem.controlPoints[idx]
+        if idx+1 >= stem.controlPoints.count { return }
+        let pNext = stem.controlPoints[idx+1]
+        let v1 = (pCurr - pPrev).normalized()
+        let v2 = (pNext - pCurr).normalized()
+        let dotVal = max(-1,min(1, SCNVector3.dot(v1,v2)))
+        let angle = acos(dotVal)
+        if angle < stemJointAngleThreshold { return }
+        let sphere = SCNSphere(radius: CGFloat(stem.radius * stemJointScale))
+        // Lighten joint color slightly more vs stem segments
+        let baseHue: CGFloat = stem.isMain ? 0.27 : 0.26
+        let brightness: CGFloat = stem.isMain ? 0.50 : 0.47
+        let m = SCNMaterial(); m.diffuse.contents = UIColor(hue: baseHue, saturation: 0.45, brightness: brightness, alpha: 1); m.lightingModel = .physicallyBased; sphere.materials=[m]
+        let node = SCNNode(geometry: sphere)
+        node.position = pCurr
+        node.name = jointName
+        rootNode.addChildNode(node)
+    }
+}

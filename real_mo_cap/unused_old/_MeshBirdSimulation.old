@@ -1,0 +1,856 @@
+import SceneKit
+import UIKit
+
+// Extension for SCNVector3 to avoid ambiguous calls
+extension SCNVector3 {
+    // To avoid ambiguous calls, define custom methods that are specific to this class
+    func length_() -> Float {
+        return sqrt(x*x + y*y + z*z)
+    }
+    
+    func normalized_() -> SCNVector3 {
+        let len = length_()
+        return len > 0 ? SCNVector3(x / len, y / len, z / len) : SCNVector3Zero
+    }
+    
+    static func subtract(_ v1: SCNVector3, _ v2: SCNVector3) -> SCNVector3 {
+        return SCNVector3(v1.x - v2.x, v1.y - v2.y, v1.z - v2.z)
+    }
+    
+    static func add(_ v1: SCNVector3, _ v2: SCNVector3) -> SCNVector3 {
+        return SCNVector3(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z)
+    }
+    
+    static func multiply(_ v: SCNVector3, _ s: Float) -> SCNVector3 {
+        return SCNVector3(v.x * s, v.y * s, v.z * s)
+    }
+    
+    static func distance_(_ v1: SCNVector3, _ v2: SCNVector3) -> Float {
+        return subtract(v2, v1).length_()
+    }
+    
+    // Add explicit cross and dot products with unique names to avoid ambiguity
+    static func cross_(_ v1: SCNVector3, _ v2: SCNVector3) -> SCNVector3 {
+        return SCNVector3(
+            v1.y * v2.z - v1.z * v2.y,
+            v1.z * v2.x - v1.x * v2.z,
+            v1.x * v2.y - v1.y * v2.x
+        )
+    }
+    
+    static func dot_(_ v1: SCNVector3, _ v2: SCNVector3) -> Float {
+        return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
+    }
+    
+    // Helper to check if a vector is zero
+    var isZero: Bool {
+        return x == 0 && y == 0 && z == 0
+    }
+    
+    // Helper to apply matrix transformation
+    func applying(_ matrix: SCNMatrix4) -> SCNVector3 {
+        let x = self.x * matrix.m11 + self.y * matrix.m21 + self.z * matrix.m31 + matrix.m41
+        let y = self.x * matrix.m12 + self.y * matrix.m22 + self.z * matrix.m32 + matrix.m42
+        let z = self.x * matrix.m13 + self.y * matrix.m23 + self.z * matrix.m33 + matrix.m43
+        return SCNVector3(x, y, z)
+    }
+}
+
+class MeshBirdSimulation: LifeformSimulation {
+    private var jointPositions: [String: SCNVector3] = [:]
+    private var jointNodes: [String: SCNNode] = [:]
+    private var splineNodes: [String: SCNNode] = [:]
+    
+    private var time: Float = 0.0
+    private var wingFlapSpeed: Float = 1.0
+    private var birdSize: Float = 5.0
+    private let rigBaseSize: Float = 5.0 // new: authored rig size
+    private var birdRotation: Float = 0.0 // New rotation parameter in degrees
+    weak var sceneReference: SCNScene?
+    weak var scnView: SCNView? // <-- Changed from private to internal
+    // Added: accumulated translation from user drag
+    private var userOffset: SCNVector3 = SCNVector3Zero
+    // Wind intensity scaling (affects wind drift & surge only)
+    private var windIntensity: Float = 1.0
+
+    // Expose visual bounds similar to Boids for normalization
+    var visualBounds: Float {
+        if let scene = sceneReference,
+           let cameraState = (scene as? NSObject)?.value(forKey: "cameraState") as? CameraOrbitState {
+            return cameraState.visualBounds
+        }
+        return 30.0
+    }
+
+    
+    // Bird skeleton structure definition
+    private let joints = [
+        "body", "lowerBack", "upperBack", "head", "neck", "tail", "tailTip",
+        "leftWingShoulder", "leftWingMid", "leftWingTip",
+        "leftWingBack1", "leftWingBack2", "leftWingBack3",
+        "rightWingShoulder", "rightWingMid", "rightWingTip",
+        "rightWingBack1", "rightWingBack2", "rightWingBack3",
+        "beakBase", "beakTip",
+        
+        "underneck1", "underneck2",
+        "bodyUnder1", "bodyUnder2", // under main body
+        "lowerBackUnder1", "lowerBackUnder2" // under lower back
+    ]
+    
+    // Define connections between joints to form the skeleton
+    private let splines = [
+        ("body", "lowerBack"),
+        ("lowerBack", "tail"),
+        ("tail", "tailTip"),
+        ("body", "upperBack"),
+        ("upperBack", "neck"),
+        ("neck", "head"),
+        ("head", "beakBase"),
+        ("beakBase", "beakTip"),
+        ("bodyUnder2", "leftWingShoulder"),
+        ("leftWingShoulder", "leftWingMid"),
+        ("leftWingMid", "leftWingTip"),
+        ("leftWingShoulder", "leftWingBack1"),
+        ("leftWingBack1", "leftWingBack2"),
+        ("leftWingBack2", "leftWingBack3"),
+        ("leftWingTip", "leftWingBack3"),
+        ("bodyUnder1", "rightWingShoulder"),
+        ("rightWingShoulder", "rightWingMid"),
+        ("rightWingMid", "rightWingTip"),
+      
+        ("rightWingMid", "rightWingBack3"),
+        ("leftWingMid", "leftWingBack3"),
+        ("rightWingMid", "rightWingBack2"),
+        ("leftWingMid", "leftWingBack2"),
+        
+        ("rightWingShoulder", "rightWingBack1"),
+        ("rightWingBack1", "rightWingBack2"),
+        ("rightWingBack2", "rightWingBack3"),
+        ("rightWingTip", "rightWingBack3"),
+        // New splines from back of each wing to lowerBack
+        ("leftWingBack1", "lowerBack"),
+        ("rightWingBack1", "lowerBack"),
+        ("body","rightWingShoulder"),
+        ("body","leftWingShoulder"),
+        
+        
+        ("neck","rightWingShoulder"),
+        ("neck","leftWingShoulder"),
+        
+        ("underneck1", "neck"),
+        ("underneck2", "neck"),
+        
+        ("underneck1", "head"),
+        ("underneck2", "head"),
+          ("underneck1", "underneck2"),
+          ("underneck1", "bodyUnder1"),
+          ("underneck2", "bodyUnder2"),
+            ("bodyUnder1", "bodyUnder2"),
+            ("bodyUnder1", "lowerBackUnder1"),
+            ("bodyUnder2", "lowerBackUnder2"),
+           ("body", "bodyUnder1"),
+           ("body", "bodyUnder2"),
+           ("lowerBack", "lowerBackUnder1"),
+           ("lowerBack", "lowerBackUnder2"),
+        ("tail", "lowerBackUnder1"),
+        ("tail", "lowerBackUnder2")
+    ]
+    
+    // Define colors for joint visualization
+    private let colors: [String: UIColor] = [
+        "body": UIColor.brown,
+        "lowerBack": UIColor.gray,
+        "upperBack": UIColor.systemTeal,
+        "head": UIColor(red: 0.1, green: 0.4, blue: 0.1, alpha: 1.0),
+        "neck": UIColor.brown,
+        "tail": UIColor.darkGray,
+        "tailTip": UIColor.darkGray,
+        "leftWingShoulder": UIColor.lightGray,
+        "leftWingMid": UIColor.lightGray,
+        "leftWingTip": UIColor.white,
+        "rightWingShoulder": UIColor.lightGray,
+        "rightWingMid": UIColor.lightGray,
+        "rightWingTip": UIColor.white,
+        "beakBase": UIColor.orange,
+        "beakTip": UIColor.yellow,
+        "rightWingBack2": UIColor.purple,
+        "leftWingBack2": UIColor.purple
+    ]
+    
+    // Update your initializer to accept scnView
+    init(scene: SCNScene, scnView: SCNView?) {
+        self.sceneReference = scene
+        self.scnView = scnView
+        setupLighting(in: scene)
+        setupBird(in: scene)
+    }
+
+    
+    
+    private func setupLighting(in scene: SCNScene) {
+        // Add ambient light
+        let ambientLight = SCNNode()
+        ambientLight.light = SCNLight()
+        ambientLight.light?.type = .ambient
+        ambientLight.light?.color = UIColor(white: 0.6, alpha: 1.0)
+        scene.rootNode.addChildNode(ambientLight)
+        
+        // Add directional light
+        let directionalLight = SCNNode()
+        directionalLight.light = SCNLight()
+        directionalLight.light?.type = .directional
+        directionalLight.light?.color = UIColor(white: 0.8, alpha: 1.0)
+        directionalLight.position = SCNVector3(x: 5, y: 5, z: 5)
+        directionalLight.eulerAngles = SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0)
+        scene.rootNode.addChildNode(directionalLight)
+    }
+    
+    private func setupBird(in scene: SCNScene) {
+        // Clear any existing nodes
+        rootNode.removeFromParentNode()
+        rootNode = SCNNode()
+        jointNodes = [:]
+        splineNodes = [:]
+        
+        let s = rigBaseSize // use base size for authored joint positions
+        // Position the rootNode at the center of the scene
+        rootNode.position = SCNVector3(0, 0, 0)
+        // Define joint positions for a natural bird pose
+        jointPositions = [
+            "body": SCNVector3(0, 0, 0),
+            "lowerBack": SCNVector3(0, 0, -s * 0.15),
+            "upperBack": SCNVector3(0, s * 0.025, s * 0.125),
+            "neck": SCNVector3(0, s * 0.05, s * 0.25),
+            "head": SCNVector3(0, s * 0.08, s * 0.45),
+            "beakBase": SCNVector3(0, s * 0.08, s * 0.55),
+            "beakTip": SCNVector3(0, s * 0.05, s * 0.65),
+            "tail": SCNVector3(0, s * 0.0, -s * 0.3),
+            "tailTip": SCNVector3(0, s * 0.0, -s * 0.5),
+            "leftWingShoulder": SCNVector3(-s * 0.4, 0, 0),
+            "leftWingMid": SCNVector3(-s * 0.5, 0, 0),
+            "leftWingTip": SCNVector3(-s * 0.7, 0, 0),
+            "leftWingBack1": SCNVector3(-s * 0.3, -s * 0.05, -s * 0.1),
+            "leftWingBack2": SCNVector3(-s * 0.5, -s * 0.08, -s * 0.15),
+            "leftWingBack3": SCNVector3(-s * 0.65, -s * 0.12, -s * 0.18),
+            "rightWingShoulder": SCNVector3(s * 0.4, 0, 0),
+            "rightWingMid": SCNVector3(s * 0.5, 0, 0),
+            "rightWingTip": SCNVector3(s * 0.7, 0, 0),
+            "rightWingBack1": SCNVector3(s * 0.3, -s * 0.05, -s * 0.1),
+            "rightWingBack2": SCNVector3(s * 0.5, -s * 0.08, -s * 0.15),
+            "rightWingBack3": SCNVector3(s * 0.65, -s * 0.12, -s * 0.18),
+            
+            
+              "bodyUnder1": SCNVector3(0.10 * s, -0.14 * s, 0), // adjust as needed
+              "bodyUnder2": SCNVector3(-0.10 * s, -0.14 * s, 0),
+            
+               "lowerBackUnder1": SCNVector3(0.08 * s, -0.1 * s, -0.15 * s),
+               "lowerBackUnder2": SCNVector3(-0.08 * s, -0.1 * s, -0.15 * s),
+            
+            "underneck1": SCNVector3(0.25, s * -0.08, s * 0.2),
+            "underneck2": SCNVector3(-0.25, s * -0.08, s * 0.2)
+        ]
+        
+        // Create joint visualization nodes
+        createJointNodes(scale: s)
+        
+        // Create splines (bones) between joints
+        createSplineBones(scale: s)
+        
+        // Add root node to scene
+        scene.rootNode.addChildNode(rootNode)
+        applySizeScale() // ensure visual size
+        print("[DEBUG] Bird rootNode added to scene: \(rootNode)")
+    }
+    
+    private func createJointNodes(scale s: Float) {
+        for (name, pos) in jointPositions {
+            let node = SCNNode()
+            
+            // Size the joint spheres appropriately
+            let radius: CGFloat
+            if name == "body" {
+                radius = CGFloat(0.12 * s)
+            } else if name == "head" {
+                radius = CGFloat(0.09 * s)
+            } else if name == ("upperBack") ||
+                      name == ("lowerBack") {
+                radius = CGFloat(0.09 * s)
+            }
+            else if name == ("WingTip") {
+                radius = CGFloat(0.04 * s)
+            } else if name == ("WingMid") {
+                radius = CGFloat(0.05 * s)
+            } else if name == ("tailTip") {
+                radius = CGFloat(0.04 * s)
+            } else if name == ("beak") {
+                radius = CGFloat(0.03 * s)
+            } else if name == ("beakTip") {
+                radius = CGFloat(0.02 * s)
+            }else {
+                radius = CGFloat(0.04 * s)
+            }
+            
+            // Create the joint sphere
+            node.geometry = SCNSphere(radius: radius)
+            // DEBUG: Make all joints bright red and opaque
+           node.geometry?.firstMaterial?.diffuse.contents = colors[name] ?? UIColor.gray
+            node.geometry?.firstMaterial?.transparency = 1.0
+            node.position = pos
+            // Add eyes to the head joint, positioned at the outer radius
+            /*
+            if name == "head" {
+                let headRadius = Float(0.09 * s)
+                let eyeRadius = Float(0.018 * s)
+                let eyeOffset = headRadius + eyeRadius * 0.7
+                // Place eyes on the left/right side of the head, centered vertically and forward
+                let leftEye = SCNNode(geometry: SCNSphere(radius: CGFloat(eyeRadius)))
+                leftEye.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+                leftEye.position = SCNVector3(-eyeOffset, 0, headRadius * 0.7)
+                leftEye.name = "leftEye"
+                node.addChildNode(leftEye)
+                let rightEye = SCNNode(geometry: SCNSphere(radius: CGFloat(eyeRadius)))
+                rightEye.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+                rightEye.position = SCNVector3(eyeOffset, 0, headRadius * 0.7)
+                rightEye.name = "rightEye"
+                node.addChildNode(rightEye)
+            }
+            */
+            jointNodes[name] = node
+            rootNode.addChildNode(node)
+        }
+    }
+    
+    private func createSplineBones(scale s: Float) {
+        for (a, b) in splines {
+            guard let posA = jointPositions[a],
+                  let posB = jointPositions[b] else { continue }
+            
+            // Determine bone thickness based on the joint type
+            let thickness: Float
+            if a.contains("beak") || b.contains("beak") {
+                thickness = 0.015 * s // Thinner for beak
+            } else if a == "body" || b == "body" {
+                thickness = 0.03 * s
+            } else {
+                thickness = 0.02 * s
+            }
+            
+            // Create the bone as a cylinder
+            let splineNode = createCylinderBetween(
+                from: posA,
+                to: posB,
+                radius: thickness
+            )
+            // DEBUG: Make all splines bright red and opaque
+           // splineNode.geometry?.firstMaterial?.diffuse.contents = UIColor.red
+            splineNode.geometry?.firstMaterial?.transparency = 1.0
+            splineNodes["\(a)_\(b)"] = splineNode
+            rootNode.addChildNode(splineNode)
+        }
+    }
+    
+    private func createCylinderBetween(from: SCNVector3, to: SCNVector3, radius: Float) -> SCNNode {
+        let height = CGFloat(SCNVector3.subtract(to, from).length_())
+        let cylinder = SCNCylinder(radius: CGFloat(radius), height: height)
+        cylinder.firstMaterial?.diffuse.contents = UIColor(white: 0.7, alpha: 0.8)
+        
+        let node = SCNNode(geometry: cylinder)
+        node.position = from
+        
+        // Position the cylinder correctly
+        node.pivot = SCNMatrix4MakeTranslation(0, -Float(height/2), 0)
+        orientNodeToDirection(node, from: from, to: to)
+        
+        return node
+    }
+    
+    private func orientNodeToDirection(_ node: SCNNode, from: SCNVector3, to: SCNVector3) {
+        let direction = SCNVector3.subtract(to, from).normalized_()
+        if direction.isZero { return }
+        
+        let yAxis = SCNVector3(0, 1, 0)
+        let rotationAxis = SCNVector3.cross_(yAxis, direction)
+        
+        if !rotationAxis.isZero {
+            let angle = acos(SCNVector3.dot_(yAxis, direction))
+            node.rotation = SCNVector4(rotationAxis.x, rotationAxis.y, rotationAxis.z, angle)
+        }
+    }
+    
+    private func createMeshFromJoints(jointsList: [String], name: String) -> SCNNode {
+        var positions: [SCNVector3] = []
+        for jointName in jointsList {
+            if let pos = jointPositions[jointName] {
+                positions.append(pos)
+            }
+        }
+        
+        if positions.count < 3 {
+            return SCNNode() // Need at least 3 points for a surface
+        }
+        
+        let meshNode = SCNNode()
+        
+        // Create geometry based on the mesh type
+        let geometry: SCNGeometry
+        switch name {
+            case "leftWingMesh", "rightWingMesh":
+                geometry = createWingMesh(positions: positions)
+            case "bodyMesh":
+                geometry = createBodyMesh(positions: positions)
+            case "tailMesh":
+                geometry = createTailMesh(positions: positions)
+            case "headMesh":
+                geometry = createHeadMesh(positions: positions)
+            case "beakMesh":
+                geometry = createBeakMesh(positions: positions)
+            default:
+                geometry = createSimpleMesh(positions: positions)
+        }
+        
+        // Apply material
+        let material = SCNMaterial()
+      //  material.diffuse.contents = meshColors[name] ?? UIColor.gray
+        material.isDoubleSided = true
+        material.transparency = 0.7
+        geometry.materials = [material]
+        
+        meshNode.geometry = geometry
+        return meshNode
+    }
+    
+    private func createWingMesh(positions: [SCNVector3]) -> SCNGeometry {
+        // For wings, create triangular mesh with connections
+        let vertices = positions
+        var indices: [Int32] = []
+        
+        if positions.count >= 4 {
+            // First triangle: body, shoulder, mid
+            indices.append(0) // body
+            indices.append(1) // shoulder
+            indices.append(2) // mid
+            
+            // Second triangle: body, mid, tip
+            indices.append(0) // body
+            indices.append(2) // mid
+            indices.append(3) // tip
+        } else if positions.count >= 3 {
+            // Simple triangle
+            indices.append(0)
+            indices.append(1)
+            indices.append(2)
+        }
+        
+        let vertexSource = SCNGeometrySource(vertices: vertices)
+        
+        // Add normal vectors for proper lighting
+        var normals: [SCNVector3] = []
+        for _ in 0..<vertices.count {
+            normals.append(SCNVector3(0, 1, 0))
+        }
+        let normalSource = SCNGeometrySource(normals: normals)
+        
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        return SCNGeometry(sources: [vertexSource, normalSource], elements: [element])
+    }
+    
+    private func createBodyMesh(positions: [SCNVector3]) -> SCNGeometry {
+        return createSimpleMesh(positions: positions)
+    }
+    
+    private func createTailMesh(positions: [SCNVector3]) -> SCNGeometry {
+        return createSimpleMesh(positions: positions)
+    }
+    
+    private func createHeadMesh(positions: [SCNVector3]) -> SCNGeometry {
+        return createSimpleMesh(positions: positions)
+    }
+    
+    private func createBeakMesh(positions: [SCNVector3]) -> SCNGeometry {
+        return createSimpleMesh(positions: positions)
+    }
+    
+    private func createSimpleMesh(positions: [SCNVector3]) -> SCNGeometry {
+        let vertices = positions
+        var indices: [Int32] = []
+        
+        // Create triangles connecting points
+        if vertices.count >= 3 {
+            // Create a fan of triangles around the first point
+            for i in 1..<(vertices.count-1) {
+                indices.append(0)
+                indices.append(Int32(i))
+                indices.append(Int32(i+1))
+            }
+        }
+        
+        let vertexSource = SCNGeometrySource(vertices: vertices)
+        
+        // Add normal vectors for proper lighting
+        var normals: [SCNVector3] = []
+        for _ in 0..<vertices.count {
+            normals.append(SCNVector3(0, 1, 0))
+        }
+        let normalSource = SCNGeometrySource(normals: normals)
+        
+        let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
+        return SCNGeometry(sources: [vertexSource, normalSource], elements: [element])
+    }
+    
+    // MARK: - Animation Methods
+    private let avgSmoothing: Float = 0.02 // Lower = slower response
+    private let centerPosition = SCNVector3(0, 0, 0) // Set your scene's center as needed
+    private var avgFlapModulation: Float = 1.0
+
+
+    func update(deltaTime: Float) {
+        let modulation = 0.95 + 0.05 * sin(time * 1.1)
+        // Exponential moving average
+        avgFlapModulation += (modulation - avgFlapModulation) * avgSmoothing
+
+        let wingFlapSpeed = self.wingFlapSpeed  * modulation
+        time += deltaTime * wingFlapSpeed
+        animateBirdMovement()
+        updateSplines()
+    }
+ 
+    private func animateBirdMovement() {
+        let s = rigBaseSize // fixed for internal animation; scaled visually by rootNode.scale
+        // Wind drift: slow, smooth horizontal and vertical movement (scaled by windIntensity)
+        let windTime = time * 0.2
+        let windX = sin(windTime) * s * 0.2 * windIntensity
+        let windY = cos(windTime * 0.7) * s * 0.15 * windIntensity
+
+        // Forward/backward surge scaled by windIntensity
+        let surge = ((avgFlapModulation - 0.975) / 0.025) * s * 0.12 * windIntensity
+
+        // Combine for new position, clamp (clamp grows mildly with intensity)
+        var newPos = SCNVector3(
+            centerPosition.x + windX,
+            centerPosition.y + windY,
+            centerPosition.z + surge
+        )
+        let maxOffset = s * 0.2 * max(1.0, windIntensity)
+        newPos.x = max(-maxOffset, min(maxOffset, newPos.x))
+        newPos.y = max(-maxOffset, min(maxOffset, newPos.y))
+        newPos.z = max(-maxOffset, min(maxOffset, newPos.z))
+        // Apply user drag translation (no clamping)
+        rootNode.position = SCNVector3.add(newPos, userOffset)
+        
+        // Wing flapping animation
+        let flapAngle = sin(time * 3.0)
+        let shoulderFlap = flapAngle * s * 0.15
+        let midFlap = flapAngle * s * 0.25
+        // Tuck the tips slightly towards the body when wings are down
+        let tipTuck = (1 - max(0, flapAngle)) * s * 0.10
+        let tipFlap = flapAngle * s * 0.3
+        jointPositions["leftWingTip"] = SCNVector3(-s * 0.7 + tipTuck, tipFlap * 1.6, 0)
+        jointPositions["rightWingTip"] = SCNVector3(s * 0.7 - tipTuck, tipFlap * 1.6, 0)
+        jointPositions["leftWingShoulder"] = SCNVector3(-s * 0.2, shoulderFlap, 0)
+        jointPositions["leftWingMid"] = SCNVector3(-s * 0.4, midFlap * 1.3, 0)
+        jointPositions["rightWingShoulder"] = SCNVector3(s * 0.2, shoulderFlap, 0)
+        jointPositions["rightWingMid"] = SCNVector3(s * 0.4, midFlap * 1.3, 0)
+        
+        jointPositions["body"] = SCNVector3(0, midFlap * 0.05, 0)
+        
+        // Animate new back wing joints for left wing
+        jointPositions["leftWingBack1"] = SCNVector3(-s * 0.3, shoulderFlap * 0.7, -s * 0.1)
+        jointPositions["leftWingBack2"] = SCNVector3(-s * 0.5, midFlap * 0.8, -s * 0.15)
+        jointPositions["leftWingBack3"] = SCNVector3(-s * 0.65, tipFlap * 1.0, -s * 0.18)
+        // Animate new back wing joints for right wing
+        jointPositions["rightWingBack1"] = SCNVector3(s * 0.3, shoulderFlap * 0.7, -s * 0.1)
+        jointPositions["rightWingBack2"] = SCNVector3(s * 0.5, midFlap * 0.8, -s * 0.15)
+        jointPositions["rightWingBack3"] = SCNVector3(s * 0.65, tipFlap * 1.0, -s * 0.18)
+      
+       
+        // Head bobbing with opposite phase to wings
+        let headPhase = -flapAngle
+        let headBobVertical = headPhase * s * 0.03
+        let headBobHorizontal = headPhase * s * 0.05
+        
+        jointPositions["neck"] = SCNVector3(0, s * 0.05 - headBobVertical * 0.5, s * 0.25 + headBobHorizontal * 0.5)
+        jointPositions["head"] = SCNVector3(0, s * 0.08 - headBobVertical, s * 0.45 + headBobHorizontal)
+        // Animate beak with head
+        jointPositions["beakBase"] = SCNVector3(0, s * 0.08 - headBobVertical, s * 0.55 + headBobHorizontal)
+        jointPositions["beakTip"] = SCNVector3(0, s * 0.05 - headBobVertical, s * 0.65 + headBobHorizontal)
+        //***
+        jointPositions["bodyUnder1"] = SCNVector3(0.1*s, -0.14 * s , s * 0 + headBobHorizontal)
+        jointPositions["bodyUnder2"] = SCNVector3(-0.1*s, -0.14 * s , s * 0 + headBobHorizontal)
+        //        "bodyUnder1": SCNVector3(0.15 * s, -0.14 * s, 0), // adjust as needed
+       // "bodyUnder2": SCNVector3(-0.15 * s, -0.14 * s, 0),
+        
+        
+        // Animate tail
+        let tailExtension = -flapAngle * s * 0.05
+       // let bodyUnderLift = max(0, headBobHorizontal) * 0.25 // adjust multiplier for effect
+        jointPositions["tail"] = SCNVector3(0, tailExtension * 0.4, -s * 0.3)
+        jointPositions["tailTip"] = SCNVector3(0, tailExtension * 0.9, -s * 0.5 - tailExtension * 0.2)
+        
+     
+        // Update joint positions
+        for (name, node) in jointNodes {
+            node.position = jointPositions[name] ?? node.position
+        }
+        
+        // Animate eyes to move with the head
+        if let headNode = jointNodes["head"] {
+            let eyeOffsetY = 0.025 * s + headBobVertical * 0.2
+            let eyeOffsetZ = 0.04 * s + headBobHorizontal * 0.2
+            if let leftEye = headNode.childNode(withName: "leftEye", recursively: false) {
+                leftEye.position = SCNVector3(-0.025 * s, eyeOffsetY, eyeOffsetZ)
+            }
+            if let rightEye = headNode.childNode(withName: "rightEye", recursively: false) {
+                rightEye.position = SCNVector3(0.025 * s, eyeOffsetY, eyeOffsetZ)
+            }
+        }
+        
+        
+        // Output coordinates to the console
+        /*
+        if let head = jointPositions["head"],
+           let tail = jointPositions["tail"],
+           let leftWingTip = jointPositions["leftWingTip"],
+           let rightWingTip = jointPositions["rightWingTip"],
+           let bodyUnder1 = jointPositions["bodyUnder1"],
+           let bodyUnder2 = jointPositions["bodyUnder2"] {
+            print("Head: (x: \(head.x), y: \(head.y), z: \(head.z))")
+            print("Tail: (x: \(tail.x), y: \(tail.y), z: \(tail.z))")
+            print("Left Wing Tip: (x: \(leftWingTip.x), y: \(leftWingTip.y), z: \(leftWingTip.z))")
+            print("Right Wing Tip: (x: \(rightWingTip.x), y: \(rightWingTip.y), z: \(rightWingTip.z))")
+            print("Body Under 1: (x: \(bodyUnder1.x), y: \(bodyUnder1.y), z: \(bodyUnder1.z))")
+            print("Body Under 2: (x: \(bodyUnder2.x), y: \(bodyUnder2.y), z: \(bodyUnder2.z))")
+         }
+         */
+        // Removed per-frame screen-space joint printing to avoid performance spikes & jitter.
+        // If needed for debugging, reintroduce a throttled logger.
+    }
+  
+        
+        
+    private func updateSplines() {
+        for (key, node) in splineNodes {
+            let parts = key.split(separator: "_")
+            if parts.count == 2,
+               let a = jointPositions[String(parts[0])],
+               let b = jointPositions[String(parts[1])] {
+                
+                let height = SCNVector3.subtract(b, a).length_()
+                if let cylinder = node.geometry as? SCNCylinder {
+                    cylinder.height = CGFloat(height)
+                }
+                
+                node.position = a
+                node.pivot = SCNMatrix4MakeTranslation(0, -height/2, 0)
+                orientNodeToDirection(node, from: a, to: b)
+            }
+        }
+    }
+
+    
+    // MARK: - Public Methods
+    
+    func reset() {
+        rootNode.removeFromParentNode()
+        if let scene = sceneReference {
+            setupBird(in: scene)
+        }
+        time = 0.0
+        userOffset = SCNVector3Zero // clear user translation
+        applySizeScale()
+    }
+    
+    func setWingFlapSpeed(_ speed: Float) {
+        // Clamp to UI slider range to avoid sudden extreme values causing jitter
+        let clamped = max(0.1, min(speed, 6.0))
+        self.wingFlapSpeed = clamped
+    }
+    
+    func setBirdSize(_ size: Float) {
+        let clamped = max(0.5, size)
+        birdSize = clamped
+        applySizeScale()
+    }
+    
+    func setBirdRotation(_ rotation: Float) {
+        self.birdRotation = rotation
+        // Apply rotation to the root node around its Y-axis (vertical axis)
+        rootNode.eulerAngles.y = rotation * Float.pi / 180.0 // Convert degrees to radians
+    }
+    
+    func setWindIntensity(_ value: Float) {
+        windIntensity = max(0, value)
+    }
+    
+    private func applySizeScale() {
+        let scale = birdSize / rigBaseSize
+        rootNode.scale = SCNVector3(scale, scale, scale)
+    }
+    
+    private func updateBirdSizeInPlace() {
+        let s = birdSize
+        
+        // Update joint positions with new scale
+        jointPositions = [
+            "body": SCNVector3(0, 0, 0),
+            "lowerBack": SCNVector3(0, 0, -s * 0.15),
+            "upperBack": SCNVector3(0, s * 0.025, s * 0.125),
+            "neck": SCNVector3(0, s * 0.05, s * 0.25),
+            "head": SCNVector3(0, s * 0.08, s * 0.45),
+            "beakBase": SCNVector3(0, s * 0.08, s * 0.55),
+            "beakTip": SCNVector3(0, s * 0.05, s * 0.65),
+            "tail": SCNVector3(0, s * 0.0, -s * 0.3),
+            "tailTip": SCNVector3(0, s * 0.0, -s * 0.5),
+            "leftWingShoulder": SCNVector3(-s * 0.4, 0, 0),
+            "leftWingMid": SCNVector3(-s * 0.5, 0, 0),
+            "leftWingTip": SCNVector3(-s * 0.7, 0, 0),
+            "leftWingBack1": SCNVector3(-s * 0.3, -s * 0.05, -s * 0.1),
+            "leftWingBack2": SCNVector3(-s * 0.5, -s * 0.08, -s * 0.15),
+            "leftWingBack3": SCNVector3(-s * 0.65, -s * 0.12, -s * 0.18),
+            "rightWingShoulder": SCNVector3(s * 0.4, 0, 0),
+            "rightWingMid": SCNVector3(s * 0.5, 0, 0),
+            "rightWingTip": SCNVector3(s * 0.7, 0, 0),
+            "rightWingBack1": SCNVector3(s * 0.3, -s * 0.05, -s * 0.1),
+            "rightWingBack2": SCNVector3(s * 0.5, -s * 0.08, -s * 0.15),
+            "rightWingBack3": SCNVector3(s * 0.65, -s * 0.12, -s * 0.18),
+            "bodyUnder1": SCNVector3(0.10 * s, -0.14 * s, 0),
+            "bodyUnder2": SCNVector3(-0.10 * s, -0.14 * s, 0),
+            "lowerBackUnder1": SCNVector3(0.08 * s, -0.1 * s, -0.15 * s),
+            "lowerBackUnder2": SCNVector3(-0.08 * s, -0.1 * s, -0.15 * s),
+            "underneck1": SCNVector3(0.25, s * -0.08, s * 0.2),
+            "underneck2": SCNVector3(-0.25, s * -0.08, s * 0.2)
+        ]
+        
+        // Update existing joint node sizes and positions
+        for (name, node) in jointNodes {
+            if let newPos = jointPositions[name] {
+                node.position = newPos
+                
+                // Update sphere size
+                let radius: CGFloat
+                if name == "body" {
+                    radius = CGFloat(0.12 * s)
+                } else if name == "head" {
+                    radius = CGFloat(0.09 * s)
+                } else if name == "upperBack" || name == "lowerBack" {
+                    radius = CGFloat(0.09 * s)
+                } else if name.contains("WingTip") {
+                    radius = CGFloat(0.04 * s)
+                } else if name.contains("WingMid") {
+                    radius = CGFloat(0.05 * s)
+                } else if name == "tailTip" {
+                    radius = CGFloat(0.04 * s)
+                } else if name.contains("beak") {
+                    radius = CGFloat(0.03 * s)
+                } else if name == "beakTip" {
+                    radius = CGFloat(0.02 * s)
+                } else {
+                    radius = CGFloat(0.04 * s)
+                }
+                
+                if let sphere = node.geometry as? SCNSphere {
+                    sphere.radius = radius
+                }
+                
+                // Update eyes on head
+                if name == "head" {
+                    let headRadius = Float(0.09 * s)
+                    let eyeRadius = Float(0.018 * s)
+                    let eyeOffset = headRadius + eyeRadius * 0.7
+                    
+                    if let leftEye = node.childNode(withName: "leftEye", recursively: false) {
+                        leftEye.position = SCNVector3(-eyeOffset, 0, headRadius * 0.7)
+                        if let eyeSphere = leftEye.geometry as? SCNSphere {
+                            eyeSphere.radius = CGFloat(eyeRadius)
+                        }
+                    }
+                    if let rightEye = node.childNode(withName: "rightEye", recursively: false) {
+                        rightEye.position = SCNVector3(eyeOffset, 0, headRadius * 0.7)
+                        if let eyeSphere = rightEye.geometry as? SCNSphere {
+                            eyeSphere.radius = CGFloat(eyeRadius)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Update spline thicknesses and positions
+        for (key, node) in splineNodes {
+            let parts = key.split(separator: "_")
+            if parts.count == 2,
+               let a = jointPositions[String(parts[0])],
+               let b = jointPositions[String(parts[1])] {
+                
+                // Update thickness
+                let thickness: Float
+                let jointA = String(parts[0])
+                let jointB = String(parts[1])
+                if jointA.contains("beak") || jointB.contains("beak") {
+                    thickness = 0.015 * s
+                } else if jointA == "body" || jointB == "body" {
+                    thickness = 0.03 * s
+                } else {
+                    thickness = 0.02 * s
+                }
+                
+                let height = SCNVector3.subtract(b, a).length_()
+                if let cylinder = node.geometry as? SCNCylinder {
+                    cylinder.radius = CGFloat(thickness)
+                    cylinder.height = CGFloat(height)
+                }
+                
+                node.position = a
+                node.pivot = SCNMatrix4MakeTranslation(0, -height/2, 0)
+                orientNodeToDirection(node, from: a, to: b)
+            }
+        }
+    }
+    
+    func trackerNames() -> [String] {
+        let names = Array(jointPositions.keys)
+        if !names.isEmpty { return names }
+        return [
+            "body","lowerBack","upperBack","head","neck","tail","tailTip",
+            "leftWingShoulder","leftWingMid","leftWingTip",
+            "leftWingBack1","leftWingBack2","leftWingBack3",
+            "rightWingShoulder","rightWingMid","rightWingTip",
+            "rightWingBack1","rightWingBack2","rightWingBack3",
+            "beakBase","beakTip",
+            "underneck1","underneck2",
+            "bodyUnder1","bodyUnder2",
+            "lowerBackUnder1","lowerBackUnder2"
+        ]
+    }
+    
+    // New: accumulate user translation offset
+    func translate(dx: Float, dy: Float, dz: Float) {
+        userOffset.x += dx
+        userOffset.y += dy
+        userOffset.z += dz
+    }
+    
+    func jointWorldPosition(_ name: String) -> SCNVector3? {
+        if let node = jointNodes[name] { return node.worldPosition }
+        if let pos = jointPositions[name] {
+            // Convert local pos to world by applying rootNode transform
+            let world = pos.applying(rootNode.worldTransform)
+            return world
+        }
+        return nil
+    }
+    
+    /// Project a joint into 0-127 screen-space X/Y values if scnView is present (matches Barley/Planets behavior)
+    func projectedJointXY127(jointName: String) -> (x: Int, y: Int)? {
+        guard let scnView = scnView, let worldPos = jointWorldPosition(jointName) else { return nil }
+        let proj = scnView.projectPoint(worldPos)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let xView = CGFloat(proj.x)
+        let yView = h - CGFloat(proj.y) // flip to top-left origin
+        let x127 = Int(round(min(max(xView, 0), w) / w * 127))
+        let y127 = Int(round(min(max(yView, 0), h) / h * 127))
+        return (x127, y127)
+    }
+
+}
+
+private var rootNode: SCNNode = SCNNode()

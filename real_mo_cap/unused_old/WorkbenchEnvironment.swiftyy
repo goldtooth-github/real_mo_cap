@@ -1,0 +1,25 @@
+import SwiftUI
+
+private struct InWorkbenchKey: EnvironmentKey { static let defaultValue: Bool = false }
+private struct WorkbenchShowControlsKey: EnvironmentKey { static let defaultValue: Bool = false }
+private struct WorkbenchSceneHeightKey: EnvironmentKey { static let defaultValue: CGFloat? = nil }
+private struct WorkbenchInstanceIDKey: EnvironmentKey { static let defaultValue: UUID? = nil }
+
+extension EnvironmentValues {
+    var inWorkbench: Bool {
+        get { self[InWorkbenchKey.self] }
+        set { self[InWorkbenchKey.self] = newValue }
+    }
+    var workbenchShowControls: Bool {
+        get { self[WorkbenchShowControlsKey.self] }
+        set { self[WorkbenchShowControlsKey.self] = newValue }
+    }
+    var workbenchSceneHeight: CGFloat? {
+        get { self[WorkbenchSceneHeightKey.self] }
+        set { self[WorkbenchSceneHeightKey.self] = newValue }
+    }
+    var workbenchInstanceID: UUID? {
+        get { self[WorkbenchInstanceIDKey.self] }
+        set { self[WorkbenchInstanceIDKey.self] = newValue }
+    }
+}

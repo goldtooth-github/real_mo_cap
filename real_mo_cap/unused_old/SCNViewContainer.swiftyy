@@ -1,0 +1,26 @@
+import SwiftUI
+import SceneKit
+
+struct SCNViewContainer: UIViewRepresentable {
+    let scene: SCNScene
+    let onSCNViewReady: (SCNView) -> Void
+
+    func makeUIView(context: Context) -> SCNView {
+        let v = SCNView(frame: .zero)
+        v.scene = scene
+        v.isPlaying = true
+        onSCNViewReady(v)
+        return v
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        // No-op
+    }
+
+    static func dismantleUIView(_ uiView: SCNView, coordinator: ()) {
+        uiView.isPlaying = false
+        uiView.scene?.isPaused = true
+        uiView.delegate = nil
+        uiView.scene = nil
+    }
+}

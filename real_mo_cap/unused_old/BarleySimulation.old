@@ -1,0 +1,730 @@
+import SceneKit
+
+// MARK: - Data Structures
+
+// Barley stalk data structure
+struct BarleyStalk {
+    var position: SIMD3<Float>
+    var height: Float
+    var phase: Float  // For wave effect
+    var color: UIColor
+    var rootNode: SCNNode? = nil    // Base node at ground level
+    var segments: [SCNNode] = []    // Visual segments in a parent-child hierarchy
+    var seedHead: SCNNode? = nil    // The seed head at the top
+    var lastBendAngles: [Float] = [] // To track previous bend angles for smoother transitions
+    var resistance: Float = 0.4     // Random resistance factor to wind
+}
+
+// Wind gust structure to simulate more realistic wind behavior
+struct WindGust {
+    var direction: SIMD3<Float>    // Direction the wind is blowing
+    var strength: Float            // How strong the gust is
+    var duration: Float            // How long the gust lasts
+    var startTime: Float           // When the gust started
+    var affectedArea: (min: SIMD2<Float>, max: SIMD2<Float>) // Area affected by this gust
+}
+
+// MARK: - Main Simulation Class
+
+// Class to handle barley field simulation
+class BarleySimulation: LifeformSimulation {
+    
+    // MARK: - Properties
+    
+    var stalks: [BarleyStalk] = []
+    
+    // Simulation parameters
+    let maxCoord: Int = CameraOrbitState.maxCoord
+    let sceneScale: Float = CameraOrbitState.sceneScale
+    
+    // Wind parameters
+    private var baseWindDirection: SIMD3<Float> = SIMD3<Float>(1, 0, 0)
+    private var baseWindStrength: Float = 0.8
+    private var windFrequency: Float = 1.0
+    private var windTurbulence: Float = 0.3
+    private var time: Float = 0.0
+    
+    // Wind gusts for more dynamic behavior
+    private var windGusts: [WindGust] = []
+    private var nextGustTime: Float = 3.0
+    
+    // User-controllable settings
+    var userWindStrength: Float = 3.0 {
+        didSet {
+            // When user changes wind strength, immediately generate a new gust
+            if userWindStrength > 0.5 {
+                generateWindGust(
+                    strength: 0.5 + Float.random(in: 0...1.0) * userWindStrength,
+                    duration: Float.random(in: 1.5...4.0)
+                )
+            }
+        }
+    }
+    var stalkCount: Int = 40       // Exact number of barley stalks
+    var stalkSpacing: Float = 2.0  // Distance between barley stalks
+    
+    // Scene reference with explicit name to avoid recursive property definition
+    private weak var _scene: SCNScene?
+    
+    // Timer for controlling animation updates
+    var simulationTimer: Timer?
+    
+    // Container node for entire field to allow uniform scale/rotation/translation
+    private let fieldContainer = SCNNode()
+    // Added scalable field factor (uniform scale applied to container)
+    private(set) var fieldScale: Float = 1.0
+    // Replace previous Y rotation with horizontal tilt (about X axis)
+    private(set) var fieldTilt: Float = 0.0 // radians about X
+    // New vertical (Y axis) rotation (yaw) support
+    private(set) var fieldYaw: Float = 0.0 // radians about Y (vertical axis)
+    // Y offset to raise the field vertically
+    var fieldYOffset: Float = 50.0 * CameraOrbitState.sceneScale
+    // Scale factor for seed head size
+    var seedHeadScale: Float = 2.5
+    
+    // Track current barley field bounds (raw, pre-scale) for centering & wind gust targeting
+    private var fieldMinX: Float = 0
+    private var fieldMaxX: Float = 0
+    private var fieldMinZ: Float = 0
+    private var fieldMaxZ: Float = 0
+    
+    private var tallestSeedHeadHeight: Float = 0.0
+    
+    // Accessor for scene that conforms to LifeformSimulation protocol
+    var scene: SCNScene? {
+        return _scene
+    }
+    
+    // Optional SCNView reference for projecting seed heads to 2D screen coordinates (like PlanetsSimulation)
+    weak var scnView: SCNView?
+    
+    // Add property for custom stalk color
+    var stalkColor: UIColor? = nil
+    
+    // Earth wad node (brown cylinder + green disk)
+    private var earthWadNode: SCNNode? = nil
+    
+    // Add config property for app-wide access
+    private let config: LifeformViewConfig
+    
+    // MARK: - Initialization
+    
+    // Update constructor to accept config
+    init(stalkCount: Int = 5, stalkSpacing: Float = 5.0, scene: SCNScene, stalkColor: UIColor? = nil, config: LifeformViewConfig) {
+        self.stalkCount = stalkCount
+        self.stalkSpacing = stalkSpacing
+        self._scene = scene
+        self.stalkColor = stalkColor
+        self.config = config
+        // Insert container first
+        scene.rootNode.addChildNode(fieldContainer)
+        setupEarthWad()
+        setupBarley(count: stalkCount, spacing: stalkSpacing, scene: scene)
+        addDirectionalLight(to: scene) // <-- Add this line
+        finalizeFieldPivot()
+        applyFieldScale()
+        applyFieldOrientation() // replaced applyFieldTilt()
+        
+        // Create initial wind gust
+        generateWindGust(strength: 0.7 * userWindStrength, duration: 2.0)
+    }
+    
+    // MARK: - LifeformSimulation Protocol Implementation
+    
+    // Reset the simulation
+    func reset() {
+        // Remove existing stalks
+        removeAllStalks()
+        earthWadNode?.removeFromParentNode()
+        setupEarthWad()
+        
+        // Create new stalks
+        if let currentScene = _scene {
+            setupBarley(count: stalkCount, spacing: stalkSpacing, scene: currentScene)
+            finalizeFieldPivot()
+            applyFieldScale()
+            applyFieldOrientation() // replaced applyFieldTilt()
+            
+            // Create initial wind gust
+            generateWindGust(strength: 0.3 * userWindStrength, duration: 2.0)
+        }
+        
+        // Reset time
+        time = 0.0
+    }
+    
+    // MARK: - Stalk Management
+    
+    // Helper method to remove all stalks
+    func removeAllStalks() {
+        // Remove all existing stalks from the scene
+        for stalk in stalks {
+            stalk.rootNode?.removeFromParentNode()
+        }
+        
+        // Clear the stalks array
+        stalks.removeAll()
+    }
+    
+    // Method to update the number of barley stalks
+    func updateStalkCount(newCount: Int, scene: SCNScene) {
+        // Remove all existing stalks from the scene
+        for stalk in stalks {
+            stalk.rootNode?.removeFromParentNode()
+        }
+        
+        // Clear the stalks array
+        stalks.removeAll()
+        
+        // Set the new count
+        stalkCount = newCount
+        
+        // Recreate the barley field with the new count
+        setupBarley(count: stalkCount, spacing: stalkSpacing, scene: scene)
+    }
+    
+    // Method to update the spacing between barley stalks
+    func updateStalkSpacing(newSpacing: Float, scene: SCNScene) {
+        // Remove all existing stalks from the scene
+        for stalk in stalks {
+            stalk.rootNode?.removeFromParentNode()
+        }
+        
+        // Clear the stalks array
+        stalks.removeAll()
+        
+        // Set the new spacing
+        stalkSpacing = newSpacing
+        
+        // Recreate the barley field with the new spacing
+        setupBarley(count: stalkCount, spacing: stalkSpacing, scene: scene)
+    }
+    
+    // Method to update both count and spacing at once
+    func updateBarleyField(newCount: Int, newSpacing: Float, scene: SCNScene) {
+        // Remove all existing stalks from the scene
+        for stalk in stalks {
+            stalk.rootNode?.removeFromParentNode()
+        }
+        
+        // Clear the stalks array
+        stalks.removeAll()
+        
+        // Set the new values
+        stalkCount = newCount
+        stalkSpacing = newSpacing
+        
+        // Recreate the barley field
+        setupBarley(count: stalkCount, spacing: stalkSpacing, scene: scene)
+    }
+    
+    private func setupBarley(count: Int, spacing: Float, scene: SCNScene) {
+        // Ensure container present
+        if fieldContainer.parent == nil { scene.rootNode.addChildNode(fieldContainer) }
+        
+        let gridSize = Int(ceil(sqrt(Double(count))))
+        let actualCount = min(count, gridSize * gridSize)
+        // Total width based on dynamic grid size (gridSize-1 gaps)
+        let totalFieldWidth = Float(max(gridSize - 1, 0)) * spacing
+        // Center field about origin
+        let startX = -totalFieldWidth / 2
+        let startZ = -totalFieldWidth / 2
+        fieldMinX = Float.greatestFiniteMagnitude
+        fieldMaxX = -Float.greatestFiniteMagnitude
+        fieldMinZ = Float.greatestFiniteMagnitude
+        fieldMaxZ = -Float.greatestFiniteMagnitude
+        var currentCount = 0
+        outerLoop: for i in 0..<gridSize {
+            for j in 0..<gridSize {
+                if currentCount >= actualCount { break outerLoop }
+                let baseX = startX + Float(i) * spacing
+                let baseZ = startZ + Float(j) * spacing
+                let randomFactor = spacing * 0.8
+                let xOffset = Float.random(in: -randomFactor...randomFactor)
+                let zOffset = Float.random(in: -randomFactor...randomFactor)
+                let height = Float.random(in: 30.0...100.0)
+                let posX = baseX + xOffset
+                let posZ = baseZ + zOffset
+                let position = SIMD3<Float>(posX, 0, posZ)
+                fieldMinX = min(fieldMinX, posX)
+                fieldMaxX = max(fieldMaxX, posX)
+                fieldMinZ = min(fieldMinZ, posZ)
+                fieldMaxZ = max(fieldMaxZ, posZ)
+                let phase = Float.random(in: 0...Float.pi * 2)
+                let resistance = Float.random(in: 0.3...1.2)
+                // Use custom color if provided, otherwise random
+                let color: UIColor
+                if let customColor = stalkColor {
+                    color = customColor
+                } else {
+                    let hue = CGFloat(Float.random(in: 0.10...0.15))
+                    let saturation = CGFloat(Float.random(in: 0.6...0.8))
+                    let brightness = CGFloat(Float.random(in: 0.8...0.95))
+                    color = UIColor(hue: hue, saturation: saturation, brightness: brightness, alpha: 1.0)
+                }
+                var stalk = BarleyStalk(position: position, height: height, phase: phase, color: color, resistance: resistance)
+                let isLargeSeedHead = currentCount < 5
+                createBarleyStalk(stalk: &stalk, scene: scene, isLargeSeedHead: isLargeSeedHead)
+                stalks.append(stalk)
+                currentCount += 1
+            }
+        }
+        
+        // Apply fixed, easily identifiable colors to the first five seed heads only (leaving stalk bodies as-is)
+        let identifiablePalette: [UIColor] = [.red, .orange, .yellow, .green, .blue]
+        for i in 0..<min(identifiablePalette.count, stalks.count) {
+            if let material = stalks[i].seedHead?.geometry?.firstMaterial {
+                material.diffuse.contents = identifiablePalette[i]
+            }
+        }
+        
+        // after loop compute tallest from created stalks
+        for s in stalks { if let seed = s.seedHead { tallestSeedHeadHeight = max(tallestSeedHeadHeight, seed.worldPosition.y) } }
+
+        // Center the fieldContainer so the field is visually centered at origin and raised up
+        let centerX = (fieldMinX + fieldMaxX) / 2
+        let centerZ = (fieldMinZ + fieldMaxZ) / 2
+        fieldContainer.position = SCNVector3(
+            -centerX * sceneScale + config.initialFieldOffset.x,
+            fieldYOffset + config.initialFieldOffset.y,
+            -centerZ * sceneScale + config.initialFieldOffset.z
+        )
+    }
+    
+    // MARK: - Stalk Visualization
+    
+    private func createBarleyStalk(stalk: inout BarleyStalk, scene: SCNScene, isLargeSeedHead: Bool = false) {
+        // Create root node at the base of the stalk
+        let rootNode = SCNNode()
+        
+        // Add a significant Y-offset to raise the entire simulation above controls
+       // let yOffset: Float = 0.0 * sceneScale
+        
+        rootNode.position = SCNVector3(
+            stalk.position.x * sceneScale,
+            0,
+            stalk.position.z * sceneScale
+        )
+        // Add to container instead of scene root
+        fieldContainer.addChildNode(rootNode)
+        stalk.rootNode = rootNode
+        
+        // Number of segments in the stalk
+        let segmentCount = 8
+        let segmentHeight = stalk.height / Float(segmentCount)
+        
+        // Create segments in a hierarchical structure - each is a child of the previous
+        var previousNode = rootNode
+        var segments: [SCNNode] = [rootNode] // Include root in segments
+        var lastBendAngles: [Float] = [0] // Root doesn't bend
+        
+        for i in 1..<segmentCount {
+            let segmentNode = SCNNode()
+            
+            // Position relative to parent segment
+            segmentNode.position = SCNVector3(0, segmentHeight * sceneScale, 0)
+            
+            // Create the visual segment (cylinder)
+            let segmentWidth = (0.2 - (Float(i) * 0.02)) * sceneScale // Thinner as we go up
+            let visualSegment = createSegmentVisual(
+                width: segmentWidth,
+                height: segmentHeight * sceneScale,
+                color: stalk.color
+            )
+            
+            // Add the visual segment to the node
+            segmentNode.addChildNode(visualSegment)
+            
+            // Add segment as a child of the previous one to create hierarchy
+            previousNode.addChildNode(segmentNode)
+            segments.append(segmentNode)
+            lastBendAngles.append(0) // Initialize bend angle to 0
+            
+            previousNode = segmentNode
+        }
+        
+        // Add seed head at the top
+        let seedHeadNode = createSeedHead(color: stalk.color, scale: sceneScale, useLargeScale: isLargeSeedHead)
+        seedHeadNode.castsShadow = true // <-- Enable shadow casting
+        previousNode.addChildNode(seedHeadNode)
+        stalk.seedHead = seedHeadNode
+        
+        stalk.segments = segments
+        stalk.lastBendAngles = lastBendAngles
+    }
+    
+    private func createSegmentVisual(width: Float, height: Float, color: UIColor) -> SCNNode {
+        // Create visual representation of a segment
+        let cylinder = SCNCylinder(radius: CGFloat(width), height: CGFloat(height))
+        cylinder.firstMaterial?.diffuse.contents = color
+        cylinder.firstMaterial?.lightingModel = .physicallyBased // <-- Ensure lighting model
+        
+        let node = SCNNode(geometry: cylinder)
+        
+        // Center the cylinder on its base and orient vertically
+        // Position the cylinder so its bottom is at the segment's origin
+        node.position = SCNVector3(0, height/2, 0)
+        node.castsShadow = true // <-- Enable shadow casting for segment
+        
+        return node
+    }
+    
+    private func createSeedHead(color: UIColor, scale: Float, useLargeScale: Bool = false) -> SCNNode {
+        // Create seed head (slightly oval sphere)
+        let appliedScale = useLargeScale ? seedHeadScale : 1.0
+        let seedHeadSize: Float = 0.3 * scale * appliedScale
+        let seedHead = SCNSphere(radius: CGFloat(seedHeadSize))
+        seedHead.firstMaterial?.diffuse.contents = color
+        
+        let seedHeadNode = SCNNode(geometry: seedHead)
+        seedHeadNode.scale = SCNVector3(1, 2, 1) // Make it slightly oval
+        
+        return seedHeadNode
+    }
+    
+    // MARK: - Wind Simulation
+    
+    // Generate a new wind gust that affects a specific area
+    private func generateWindGust(strength: Float, duration: Float) {
+        // Use barley field bounds if available; otherwise fallback to global maxCoord space
+        let hasField = fieldMinX < fieldMaxX && fieldMinZ < fieldMaxZ
+        let angleVariation = Float.random(in: -Float.pi/3...Float.pi/3)
+        let baseAngle = Float.random(in: 0...Float.pi*2)
+        let gustDirection = SIMD3<Float>(cos(baseAngle + angleVariation), 0, sin(baseAngle + angleVariation))
+        let areaSize: Float
+        let centerX: Float
+        let centerZ: Float
+        if hasField {
+            let widthX = fieldMaxX - fieldMinX
+            let widthZ = fieldMaxZ - fieldMinZ
+            areaSize = max(widthX, widthZ) * Float.random(in: 0.8...1.4)
+            centerX = Float.random(in: fieldMinX...fieldMaxX)
+            centerZ = Float.random(in: fieldMinZ...fieldMaxZ)
+        } else {
+            areaSize = Float(maxCoord) * Float.random(in: 0.3...0.8)
+            centerX = Float.random(in: -Float(maxCoord)/2...Float(maxCoord)/2)
+            centerZ = Float.random(in: -Float(maxCoord)/2...Float(maxCoord)/2)
+        }
+        let areaMin = SIMD2<Float>(centerX - areaSize/2, centerZ - areaSize/2)
+        let areaMax = SIMD2<Float>(centerX + areaSize/2, centerZ + areaSize/2)
+        let gust = WindGust(
+            direction: gustDirection,
+            strength: strength * Float.random(in: 0.7...2.0) * userWindStrength,
+            duration: duration * Float.random(in: 0.8...1.2),
+            startTime: time,
+            affectedArea: (areaMin, areaMax)
+        )
+        windGusts.append(gust)
+    }
+    
+    func update(deltaTime: Float) {
+        // Print seed head positions periodically to avoid console spam
+       // if Int(time) % 5 == 0 && Int(time * 100) % 100 < 3 {
+            printSeedHeadPositions(count: 5)
+        //}
+        
+        time += deltaTime
+      
+        // Update base wind direction gradually
+        let windAngle = sin(time * 0.05) * Float.pi * 0.5
+        baseWindDirection = SIMD3<Float>(cos(windAngle), 0, sin(windAngle))
+        
+        // Update base wind strength with slight variation, scaled by user setting
+        baseWindStrength = (0.3 + sin(time * 0.17) * 0.2) * userWindStrength
+        
+        // Update turbulence - directly scale by userWindStrength for more obvious effect
+        windTurbulence = 0.1 + abs(sin(time * 0.23)) * 0.3 * userWindStrength
+        
+        // Continuous wind gusts - generate new gusts at random intervals
+        if time > nextGustTime {
+            // Create a new gust with random parameters - strength directly tied to userWindStrength
+            generateWindGust(
+                strength: 0.5 + Float.random(in: 0...1.0),
+                duration: Float.random(in: 1.5...4.0)
+            )
+            
+            // Schedule next gust - more frequent gusts with stronger wind
+            let gustFrequency = max(2.0, 8.0 - userWindStrength * 3.0)
+            nextGustTime = time + Float.random(in: 1.0...gustFrequency)
+        }
+        
+        // Remove expired gusts
+        windGusts = windGusts.filter { time < $0.startTime + $0.duration }
+        
+        // Update each stalk
+        for index in 0..<stalks.count {
+            updateStalk(stalkIndex: index, deltaTime: deltaTime)
+        }
+    }
+    
+    private func updateStalk(stalkIndex: Int, deltaTime: Float) {
+        var stalk = stalks[stalkIndex]
+        let position = stalk.position
+        
+        // Start with base wind
+        var windEffect = sin(time * windFrequency + stalk.phase) * baseWindStrength
+        
+        // Add noise based on position for varied movement
+        let noise = sin(position.x * 0.05 + time * 0.1) * cos(position.z * 0.05 + time * 0.15) * 0.5 * userWindStrength
+        windEffect += noise
+        
+        // Apply any active wind gusts that affect this stalk
+        for gust in windGusts {
+            // Check if stalk is in the affected area
+            if position.x >= gust.affectedArea.min.x &&
+               position.x <= gust.affectedArea.max.x &&
+               position.z >= gust.affectedArea.min.y &&
+               position.z <= gust.affectedArea.max.y {
+                
+                // Calculate gust influence (stronger at the center of the gust, fading at the edges)
+                let normalizedX = (position.x - gust.affectedArea.min.x) / (gust.affectedArea.max.x - gust.affectedArea.min.x)
+                let normalizedZ = (position.z - gust.affectedArea.min.y) / (gust.affectedArea.max.y - gust.affectedArea.min.y)
+                
+                // Gaussian-like falloff from center
+                let distFromCenter = sqrt(pow(normalizedX - 0.5, 2) + pow(normalizedZ - 0.5, 2)) * 2
+                let influence = max(0, 1 - distFromCenter)
+                
+                // Time factor - gust builds up then fades out
+                let timeFactor = sin(min(Float.pi, (time - gust.startTime) / gust.duration * Float.pi))
+                
+                // Add gust effect - direct strength from the gust (already scaled by userWindStrength)
+                windEffect += gust.strength * influence * timeFactor
+                
+                // Add some turbulence based on gust strength
+                windEffect += sin(time * 12 + stalk.phase * 3) * gust.strength * 0.2 * influence * timeFactor
+            }
+        }
+        
+        // Scale by stalk's resistance
+        windEffect /= stalk.resistance
+        
+        // Apply maximum wind effect limit to prevent excessive bending
+        let maxWindEffect: Float = 2.0 * userWindStrength  // Scale maximum by user setting
+        windEffect = min(windEffect, maxWindEffect)
+        
+        // Calculate wind direction with some variation for each stalk
+        let stalkWindDir = normalize(baseWindDirection + SIMD3<Float>(
+            sin(stalk.phase + time * 0.3) * windTurbulence,
+            0,
+            cos(stalk.phase + time * 0.27) * windTurbulence
+        ))
+        
+        // Bend the stalk based on wind - progressive bending from bottom to top
+        // Skip the root segment (i=0)
+        for i in 1..<stalk.segments.count {
+            // Calculate normalized position along stalk (0 at bottom, 1 at top)
+            let normalizedHeight = Float(i) / Float(stalk.segments.count)
+            
+            // Create a bell curve effect for bend factor - maximum in the middle
+            // Use a modified sine curve to get more bending in the middle segments
+            let bendCurve = sin(normalizedHeight * Float.pi)
+            
+            // Blend the bell curve with a bit of progressive increase for top segments
+            // This creates a natural curve with the middle segments bending most
+            let bendFactor = bendCurve * 0.3 + (normalizedHeight * 0.4)
+            
+            // Calculate target bend angle based on wind and bend curve
+            let targetBendAngle = windEffect * 0.3 * bendFactor
+            
+            // Apply maximum bend angle limit for each segment
+            // This prevents excessive bending even during strong gusts
+            let maxBendAngle = Float.pi / 2.0 * bendFactor  // 90 degrees * bend factor
+            let limitedTargetAngle = min(targetBendAngle, maxBendAngle)
+            
+            // Smoothly interpolate to target angle - middle segments are more flexible
+            let stiffnessFactor = max(0.4, abs(normalizedHeight - 0.5) * 1.5)
+            let lerpFactor = min(1.0, deltaTime * (8.0 - stiffnessFactor * 6.0))
+            let currentBendAngle = stalk.lastBendAngles[i] * (1 - lerpFactor) + limitedTargetAngle * lerpFactor
+            
+            // Store for next frame
+            stalk.lastBendAngles[i] = currentBendAngle
+            
+            // The bending axis is perpendicular to both up and wind direction
+            let upVector = SIMD3<Float>(0, 1, 0)
+            var rotationAxis = simd_cross(upVector, stalkWindDir)
+            
+            // Normalize rotation axis
+            if simd_length(rotationAxis) > 0.0001 {
+                rotationAxis = simd_normalize(rotationAxis)
+            } else {
+                // Default rotation axis if cross product is too small
+                rotationAxis = SIMD3<Float>(1, 0, 0)
+            }
+            
+            // Reset segment orientation first
+            stalk.segments[i].orientation = SCNQuaternion(x: 0, y: 0, z: 0, w: 1)
+            
+            // Apply rotation around the calculated axis
+            let rotation = SCNQuaternion(
+                rotationAxis.x * sin(currentBendAngle * 0.5),
+                rotationAxis.y * sin(currentBendAngle * 0.5),
+                rotationAxis.z * sin(currentBendAngle * 0.5),
+                cos(currentBendAngle * 0.5)
+            )
+            
+            // Apply rotation
+            stalk.segments[i].orientation = rotation
+        }
+        
+        stalks[stalkIndex] = stalk
+    }
+    
+    // MARK: - Seed Head Position Tracking
+    
+    // Function to print the coordinates of the first 5 seed heads
+    func printSeedHeadPositions(count: Int = 5) {
+        print("===== BARLEY SEED HEAD POSITIONS =====")
+        
+        // Get the number of stalks to print (minimum of available stalks and requested count)
+        let printCount = min(count, stalks.count)
+        
+        // Print position for each of the first few stalks
+        for i in 0..<printCount {
+            guard i < stalks.count, let seedHead = stalks[i].seedHead else { continue }
+            
+            // Get the world position of the seed head
+            let worldPosition = seedHead.worldPosition
+            
+            // Print coordinates with formatting
+            print("Stalk \(i+1): x: \(String(format: "%.2f", worldPosition.x)), y: \(String(format: "%.2f", worldPosition.y)), z: \(String(format: "%.2f", worldPosition.z))")
+            
+            // Calculate and print mapped coordinates (0-127 range)
+            let mappedX = Int((worldPosition.x / (10.0 )) * 127)
+            let mappedY = Int((worldPosition.z / (10.0 )) * 127)
+            print("  Mapped (0-127): x: \(mappedX), y: \(mappedY)")
+        }
+        print("====================================")
+    }
+    
+    /// Project a seed head (by stalk index) into 0-127 screen-space X/Y values if scnView is present.
+    func projectedSeedHeadXY127(stalkIndex: Int) -> (x: Int, y: Int)? {
+        guard let scnView = scnView,
+              stalkIndex >= 0, stalkIndex < stalks.count,
+              let node = stalks[stalkIndex].seedHead else { return nil }
+        let worldPos = node.presentation.worldPosition
+        let p = scnView.projectPoint(worldPos)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let xView = CGFloat(p.x)
+        let yView = h - CGFloat(p.y) // invert to match UI coordinate system
+        let x127 = Int(round(min(max(xView, 0), w) / w * 127))
+        let y127 = Int(round(min(max(yView, 0), h) / h * 127))
+        return (x127, y127)
+    }
+    
+    // MARK: - Helper Methods
+    
+    // Helper function to normalize a vector
+    private func normalize(_ vector: SIMD3<Float>) -> SIMD3<Float> {
+        let length = sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+        guard length > 0.000001 else { return SIMD3<Float>(1, 0, 0) }
+        return vector / length
+    }
+    
+    // Public method to control wind strength
+    func setWindStrength(_ strength: Float) {
+        userWindStrength = strength
+    }
+    
+    // MARK: - Timer Management
+    
+    // Timer management methods for lifecycle
+    func startSimulationTimer() {
+        // Clear any existing timer
+        simulationTimer?.invalidate()
+        
+        // Create a new timer to update the simulation
+        simulationTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.update(deltaTime: 0.03)
+        }
+    }
+    
+    /// Public setter for field scale used by pinch gesture
+    func setFieldScale(_ scale: Float) {
+        let clamped = max(0.05, scale)
+        if abs(clamped - fieldScale) < 0.0001 {
+            print("[BarleySimulation] setFieldScale called with ~same value (\(clamped)); skipping reapply")
+            return
+        }
+        print("[BarleySimulation] setFieldScale requested -> \(scale) (clamped=\(clamped)) prev=\(fieldScale)")
+        fieldScale = clamped
+        DispatchQueue.main.async {
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0
+            self.applyFieldScale()
+            SCNTransaction.commit()
+            print("[BarleySimulation] fieldContainer.scale now = \(self.fieldContainer.scale)")
+        }
+    }
+    
+    private func applyFieldScale() { fieldContainer.scale = SCNVector3(fieldScale, fieldScale, fieldScale) }
+    
+    // Unified orientation application (tilt X, yaw Y)
+    func setFieldTilt(_ angle: Float) { fieldTilt = angle; applyFieldOrientation() }
+    func setFieldYaw(_ angle: Float) { fieldYaw = angle; applyFieldOrientation() }
+    private func applyFieldOrientation() { fieldContainer.eulerAngles = SCNVector3(fieldTilt, fieldYaw, 0) }
+    
+    /// Translate whole field (used by drag gesture in nicks_control mode)
+    func translate(dx: Float, dy: Float, dz: Float) {
+        if dx == 0 && dy == 0 && dz == 0 { return }
+        fieldContainer.position.x += dx
+        fieldContainer.position.y += dy
+        fieldContainer.position.z += dz
+    }
+    
+    // After all stalks created set pivot at tallest seed head height for horizontal tilt axis
+    private func finalizeFieldPivot() {
+        fieldContainer.pivot = SCNMatrix4MakeTranslation(0, tallestSeedHeadHeight, 0)
+    }
+    
+    private func addDirectionalLight(to scene: SCNScene) {
+        let light = SCNLight()
+        light.type = .directional
+        light.color = UIColor.white
+        light.intensity = 1200
+        light.castsShadow = true // <-- Ensure the light itself casts shadows
+        light.shadowMode = .deferred
+        light.shadowColor = UIColor(white: 0, alpha: 0.5)
+        light.shadowRadius = 8.0
+        light.shadowSampleCount = 16
+        let lightNode = SCNNode()
+        lightNode.light = light
+        lightNode.position = SCNVector3(-20, 20, 20)
+        lightNode.look(at: SCNVector3(0, 10, 0))
+        scene.rootNode.addChildNode(lightNode)
+    }
+    
+    
+    // MARK: - Earth Wad Setup
+    private func setupEarthWad() {
+        earthWadNode?.removeFromParentNode()
+        let wadNode = SCNNode()
+        let wadRadius: CGFloat = 2.5
+        let wadHeight: CGFloat = 1.2
+        let earthCylinder = SCNCylinder(radius: wadRadius, height: wadHeight)
+        let earthMaterial = SCNMaterial()
+        earthMaterial.diffuse.contents = UIColor(red: 0.45, green: 0.32, blue: 0.18, alpha: 1.0)
+        earthCylinder.firstMaterial = earthMaterial
+        earthMaterial.lightingModel = .physicallyBased // <-- Enable realistic lighting
+        
+        
+        let earthNode = SCNNode(geometry: earthCylinder)
+        earthNode.position = SCNVector3(0, wadHeight / 2, 0)
+        earthNode.castsShadow = true // <-- Allow shadow castinglet earthNode = SCNNode(geometry: earthCylinder)
+        wadNode.addChildNode(earthNode)
+        let grassRadius: CGFloat = 2.5
+        let grassHeight: CGFloat = 0.18
+        let grassCylinder = SCNCylinder(radius: grassRadius, height: grassHeight)
+        let grassMaterial = SCNMaterial()
+        grassMaterial.lightingModel = .physicallyBased
+        grassMaterial.diffuse.contents = UIColor(red: 0.22, green: 0.55, blue: 0.22, alpha: 1.0)
+        grassCylinder.firstMaterial = grassMaterial
+        let grassNode = SCNNode(geometry: grassCylinder)
+        grassNode.position = SCNVector3(0, wadHeight + grassHeight / 2, 0)
+        grassNode.castsShadow = true // <-- Allow shadow casting
+        wadNode.addChildNode(grassNode)
+        fieldContainer.addChildNode(wadNode)
+        earthWadNode = wadNode
+    }
+}

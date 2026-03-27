@@ -1,0 +1,142 @@
+import SwiftUI
+import SceneKit
+
+struct MeshBirdLifeformView: View {
+    var isActive: Bool = false
+    
+    @State private var wingFlapSpeed: Float = 1.0
+    @State private var birdSize: Float = 1.0
+    @StateObject private var simulationManager = SimulationManager(updateInterval: 0.016)
+    @State private var simulation: MeshBirdSimulation?
+    @StateObject private var cameraState = CameraOrbitState()
+    @State private var pendingScene: SCNScene? = nil // Add temporary storage for the scene
+
+    
+    private let config = LifeformViewConfig(
+        initialAzimuth: 45,
+        initialElevation: 20,
+        initialRadius: 6,
+        minRadius: 3,
+        maxRadius: 12,
+        cameraControlMode: .fullControl,
+        ambientLightIntensity: 0.4,
+        directionalLightIntensity: 0.8,
+        directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0),
+        updateInterval: 0.016,
+        title: "Fly Bird",
+        description: "",
+        controlPanelColor: Color.black.opacity(0.6),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.blue.opacity(0.6)
+    )
+    
+    var body: some View {
+        ZStack {
+            WireframeCubeSceneView(
+                cameraState: cameraState,
+                sceneSetupHandler: { scene in
+                    // Set initial camera position
+                    let cameraState = CameraOrbitState()
+                    cameraState.setInitialPositionInDegrees(
+                        azimuth: Float(config.initialAzimuth),
+                        elevation: Float(config.initialElevation),
+                        radius: Float(config.initialRadius)
+                    )
+                    cameraState.minRadius = Float(config.minRadius)
+                    cameraState.maxRadius = Float(config.maxRadius)
+                    
+                    // Set up lighting
+                    setupLighting(in: scene)
+                    
+                    // Store the scene for later use with SCNView
+                    self.pendingScene = scene
+                },
+                onSCNViewReady: { scnView in
+                    // Create simulation only when both scene and view are available
+                    if let scene = pendingScene {
+                        let newSimulation = MeshBirdSimulation(scene: scene, scnView: scnView)
+                        newSimulation.setWingFlapSpeed(wingFlapSpeed)
+                        newSimulation.setBirdSize(birdSize)
+                        simulation = newSimulation
+                        simulationManager.setSimulation(newSimulation)
+                    }
+                }
+            )
+            .edgesIgnoringSafeArea(.all)
+            .modifier(CameraControlModifier(
+                cameraState: cameraState,
+                cameraControlMode: config.cameraControlMode
+            
+            )).fullCameraControls(cameraState: cameraState) // <-- Add this for gestures
+            
+            VStack {
+                Spacer()
+                VStack(spacing: 12) {
+                    Text(config.title)
+                        .font(.headline)
+                        .foregroundColor(config.controlTextColor)
+                    VStack(spacing: 16) {
+                        Text("Wing Speed")
+                            .foregroundColor(config.controlTextColor)
+                        Slider(value: $wingFlapSpeed, in: 0.1...6.0) { _ in
+                            simulation?.setWingFlapSpeed(wingFlapSpeed)
+                        }
+                        Text("Bird Size")
+                            .foregroundColor(config.controlTextColor)
+                        Slider(value: $birdSize, in: 3.0...20.0) { _ in
+                            simulation?.setBirdSize(birdSize)
+                        }
+                        Button("Reset") {
+                            simulation?.reset()
+                            wingFlapSpeed = 1.0
+                            birdSize = 1.0
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(config.buttonBackgroundColor)
+                        .foregroundColor(config.controlTextColor)
+                        .cornerRadius(8)
+                    }
+                    .padding()
+                    .background(config.controlPanelColor)
+                    .cornerRadius(10)
+                    .padding()
+                    Text(config.description)
+                        .font(.caption)
+                        .foregroundColor(config.controlTextColor.opacity(0.8))
+                }
+                .padding()
+                .background(config.controlPanelColor)
+                .cornerRadius(10)
+                .padding(.bottom)
+            }
+        }
+        .onChange(of: isActive) { newValue in
+            simulationManager.isActive = newValue
+        }
+        .onAppear {
+            simulationManager.isActive = isActive
+        }
+        .onDisappear {
+            simulationManager.isActive = false
+        }
+    }
+    
+    private func setupLighting(in scene: SCNScene) {
+        let ambientLight = SCNNode()
+        ambientLight.light = SCNLight()
+        ambientLight.light?.type = .ambient
+        ambientLight.light?.color = UIColor(white: CGFloat(config.ambientLightIntensity), alpha: 1.0)
+        scene.rootNode.addChildNode(ambientLight)
+        let directionalLight = SCNNode()
+        directionalLight.light = SCNLight()
+        directionalLight.light?.type = .directional
+        directionalLight.light?.color = UIColor(white: CGFloat(config.directionalLightIntensity), alpha: 1.0)
+        directionalLight.eulerAngles = config.directionalLightAngles
+        scene.rootNode.addChildNode(directionalLight)
+    }
+}
+
+#Preview {
+    MeshBirdLifeformView()
+}

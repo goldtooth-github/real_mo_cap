@@ -1,0 +1,142 @@
+import SwiftUI
+import SceneKit
+
+struct BoidsLifeformView: View {
+    // MARK: - Properties
+    @StateObject private var cameraState = CameraOrbitState()
+    @State private var simulation: BoidsSimulation? = nil
+    @State private var timer: Timer? = nil
+    @State private var boidSpeed: Float = 1.0
+    @State private var midiParams = MIDIParams() // MIDI integration
+    @State private var showMIDIMenu = false
+
+    // MARK: - Body
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // Main simulation view
+            WireframeCubeSceneView(cameraState: cameraState, sceneSetupHandler: { scene in
+                if simulation == nil {
+                    simulation = BoidsSimulation(scene: scene, scnView: nil)
+                }
+                
+                // Draw simulation bounds cube in red
+                let simSize = simulation?.visualBounds ?? 0
+                let simCenter = simulation?.cubeCenter ?? SCNVector3Zero
+                
+                var cubeCenter: SCNVector3 {
+                    let vb = simSize
+                    return SCNVector3(vb/2, vb/4, vb/2)
+                }
+                
+                var ord = 10
+                var antiOrd = 0
+                let positions: [SCNVector3] = [
+                    SCNVector3(ord, ord, ord),
+                    SCNVector3(antiOrd, antiOrd, antiOrd),
+                    SCNVector3(ord, antiOrd, ord),
+                    SCNVector3(ord, ord, antiOrd),
+                    SCNVector3(antiOrd, ord, ord),
+                    SCNVector3(ord, antiOrd, antiOrd),
+                    SCNVector3(antiOrd, ord, antiOrd),
+                    SCNVector3(antiOrd, antiOrd, ord),
+                ]
+                
+                for pos in positions {
+                    let sphere = SCNSphere(radius: 0.2)
+                    let sphereMaterial = SCNMaterial()
+                    sphereMaterial.diffuse.contents = UIColor.red
+                    sphereMaterial.lightingModel = .constant
+                    sphere.materials = [sphereMaterial]
+                    let sphereNode = SCNNode(geometry: sphere)
+                    sphereNode.position = pos
+                    sphereNode.renderingOrder = 200
+                    scene.rootNode.addChildNode(sphereNode)
+                }
+            }) { scnView in
+                // Optionally store scnView if needed
+            }
+            
+            // Control panel
+            VStack(spacing: 0) {
+                Divider()
+                HStack {
+                    // Speed slider
+                    HStack {
+                        Text("Speed")
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .frame(width: 60, alignment: .leading)
+                        Slider(value: $boidSpeed, in: 0.1...3.0, step: 0.01)
+                            .accentColor(.blue)
+                        Text(String(format: "%.2f", boidSpeed))
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .frame(width: 40)
+                    }
+                    Spacer()
+                    // MIDI settings button
+                    Button(action: { showMIDIMenu = true }) {
+                        Image(systemName: "gearshape")
+                            .foregroundColor(.white)
+                            .padding(8)
+                            .background(Color.blue.opacity(0.7))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("MIDI Settings")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.7))
+            }
+        }
+        .onAppear {
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { _ in
+                simulation?.setSpeedMultiplier(boidSpeed)
+                simulation?.update(deltaTime: 1.0/60.0)
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
+        }
+        .sheet(isPresented: $showMIDIMenu) {
+            MIDIMenuView(params: $midiParams)
+        }
+    }
+}
+
+#Preview {
+    BoidsLifeformView()
+}
+
+// Helper function to draw wireframe cube
+func addWireframeCube(to scene: SCNScene, center: SCNVector3, size: Float, color: UIColor) {
+    let half = size / 2
+    let corners: [SCNVector3] = [
+        SCNVector3(center.x - half, center.y - half, center.z - half),
+        SCNVector3(center.x + half, center.y - half, center.z - half),
+        SCNVector3(center.x + half, center.y + half, center.z - half),
+        SCNVector3(center.x - half, center.y + half, center.z - half),
+        SCNVector3(center.x - half, center.y - half, center.z + half),
+        SCNVector3(center.x + half, center.y - half, center.z + half),
+        SCNVector3(center.x + half, center.y + half, center.z + half),
+        SCNVector3(center.x - half, center.y + half, center.z + half)
+    ]
+    let indices: [UInt8] = [
+        0,1, 1,2, 2,3, 3,0,
+        4,5, 5,6, 6,7, 7,4,
+        0,4, 1,5, 2,6, 3,7
+    ]
+    let vertexSource = SCNGeometrySource(vertices: corners)
+    let indexData = Data(indices)
+    let element = SCNGeometryElement(data: indexData, primitiveType: .line, primitiveCount: indices.count/2, bytesPerIndex: 1)
+    let geometry = SCNGeometry(sources: [vertexSource], elements: [element])
+    let material = SCNMaterial()
+    material.diffuse.contents = UIColor.yellow // More visible
+    material.lightingModel = .constant
+    material.isDoubleSided = true
+    geometry.materials = [material]
+    let node = SCNNode(geometry: geometry)
+    node.renderingOrder = 100 // High value to draw on top
+    scene.rootNode.addChildNode(node)
+}

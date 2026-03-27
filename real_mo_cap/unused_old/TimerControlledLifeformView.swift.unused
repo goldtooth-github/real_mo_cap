@@ -1,0 +1,67 @@
+import SwiftUI
+import SceneKit
+
+// A wrapper view that adds custom lifecycle methods around GenericLifeformView
+struct TimerControlledLifeformView<SimulationType: LifeformSimulation>: View {
+    // Configuration for the view
+    var config: LifeformViewConfig
+    
+    // Function to create the simulation
+    var createSimulation: (SCNScene) -> SimulationType
+    
+    // Optional control view builder
+    var controlsBuilder: ((Binding<SimulationType?>) -> AnyView)?
+    
+    // Store simulation reference
+    @State private var simulation: SimulationType?
+    
+    // Store timer reference
+    @State private var simulationTimer: Timer?
+    
+    var body: some View {
+        GenericLifeformView<SimulationType>(
+            config: config,
+            createSimulation: { scene in
+                // Create simulation
+                let newSimulation = createSimulation(scene)
+                
+                // Store a reference to the simulation
+                self.simulation = newSimulation
+                
+                return newSimulation
+            },
+            controlsBuilder: controlsBuilder
+        )
+        .onAppear {
+            // Make sure timer is started when view appears
+            if simulationTimer == nil {
+                startSimulationTimer()
+            }
+        }
+        .onDisappear {
+            // Stop and clean up the timer when view disappears
+            simulationTimer?.invalidate()
+            simulationTimer = nil
+            simulation = nil
+        }
+    }
+    
+    // Function to start the simulation timer
+    private func startSimulationTimer() {
+        // Stop any existing timer first
+        simulationTimer?.invalidate()
+        
+        // Create a new timer and store it
+        guard let sim = simulation else { return }
+        
+        let timer = Timer(timeInterval: config.updateInterval, repeats: true) { _ in
+            sim.update(deltaTime: Float(config.updateInterval))
+        }
+        
+        // Store reference to timer
+        simulationTimer = timer
+        
+        // Add to run loop
+        RunLoop.main.add(timer, forMode: .common)
+    }
+}

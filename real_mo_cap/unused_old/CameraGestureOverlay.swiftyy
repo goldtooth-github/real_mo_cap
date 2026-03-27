@@ -1,0 +1,112 @@
+import SwiftUI
+import UIKit
+
+/// UIKit-based gesture overlay providing:
+/// - Single-finger pan -> camera panOffset
+/// - Pinch -> zoom (radius)
+/// - Two-finger vertical pan -> elevation
+/// Gestures starting inside the excluded bottom region are ignored so UI controls remain interactive.
+struct CameraGestureOverlay: UIViewRepresentable {
+    @ObservedObject var cameraState: CameraOrbitState
+    var excludedBottomHeight: CGFloat = 0
+    var panSensitivity: Float { cameraState.panSensitivity }
+    var elevationSensitivity: Float { cameraState.rotationSensitivity }
+
+    func makeCoordinator() -> Coordinator { Coordinator(cameraState: cameraState, excludedBottomHeight: excludedBottomHeight) }
+
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.isMultipleTouchEnabled = true
+        v.backgroundColor = .clear
+
+        // Single finger pan
+        let singlePan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleSinglePan(_:)))
+        singlePan.maximumNumberOfTouches = 1
+        singlePan.minimumNumberOfTouches = 1
+        v.addGestureRecognizer(singlePan)
+
+        // Pinch
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        v.addGestureRecognizer(pinch)
+
+        // Two-finger vertical pan (elevation)
+        let twoPan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTwoFingerPan(_:)))
+        twoPan.minimumNumberOfTouches = 2
+        twoPan.maximumNumberOfTouches = 2
+        v.addGestureRecognizer(twoPan)
+
+        // Allow simultaneous
+        singlePan.delegate = context.coordinator
+        pinch.delegate = context.coordinator
+        twoPan.delegate = context.coordinator
+
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.excludedBottomHeight = excludedBottomHeight
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        let cameraState: CameraOrbitState
+        var excludedBottomHeight: CGFloat
+        private var lastSingleTranslation: CGPoint = .zero
+        private var lastTwoTranslationY: CGFloat = 0
+        private var initialRadius: Float = 0
+        init(cameraState: CameraOrbitState, excludedBottomHeight: CGFloat) {
+            self.cameraState = cameraState
+            self.excludedBottomHeight = excludedBottomHeight
+        }
+        private func inExcludedZone(_ gr: UIGestureRecognizer) -> Bool {
+            guard excludedBottomHeight > 0, let v = gr.view else { return false }
+            let loc = gr.location(in: v)
+            return loc.y >= v.bounds.height - excludedBottomHeight
+        }
+        @objc func handleSinglePan(_ gr: UIPanGestureRecognizer) {
+            guard !inExcludedZone(gr) else { return }
+            let t = gr.translation(in: gr.view)
+            switch gr.state {
+            case .began: lastSingleTranslation = t
+            case .changed:
+                let dx = t.x - lastSingleTranslation.x
+                let dy = t.y - lastSingleTranslation.y
+                applyPan(deltaX: dx, deltaY: dy)
+                lastSingleTranslation = t
+            default: lastSingleTranslation = .zero
+            }
+        }
+        private func applyPan(deltaX: CGFloat, deltaY: CGFloat) {
+            let (right, up) = cameraState.panDirectionVectors()
+            let panDelta = right * Float(-deltaX) * cameraState.panSensitivity + up * Float(deltaY) * cameraState.panSensitivity
+            cameraState.panOffset += panDelta
+          //  cameraState.clampPanOffset()
+        }
+        @objc func handlePinch(_ gr: UIPinchGestureRecognizer) {
+            guard !inExcludedZone(gr) else { return }
+            switch gr.state {
+            case .began: initialRadius = cameraState.radius
+            case .changed:
+                guard initialRadius > 0 else { return }
+                let newRadius = initialRadius / Float(gr.scale)
+                cameraState.radius = min(max(newRadius, cameraState.minRadius), cameraState.maxRadius)
+            default: break
+            }
+        }
+        @objc func handleTwoFingerPan(_ gr: UIPanGestureRecognizer) {
+            guard !inExcludedZone(gr) else { return }
+            let t = gr.translation(in: gr.view)
+            switch gr.state {
+            case .began: lastTwoTranslationY = t.y
+            case .changed:
+                let dy = t.y - lastTwoTranslationY
+                cameraState.elevation -= Float(dy) * cameraState.rotationSensitivity
+               // cameraState.clampElevation()
+                lastTwoTranslationY = t.y
+            default: lastTwoTranslationY = 0
+            }
+        }
+        // Delegates
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool { !inExcludedZone(gestureRecognizer) }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+    }
+}

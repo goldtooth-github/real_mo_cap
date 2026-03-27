@@ -1,0 +1,665 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01168C072E88087300F54F0B /* old.txt in Resources */ = {isa = PBXBuildFile; fileRef = 01168C062E88086B00F54F0B /* old.txt */; };
+		014BA3592E5A3562000C15C0 /* Lifeform.png in Resources */ = {isa = PBXBuildFile; fileRef = 014BA3582E5A3562000C15C0 /* Lifeform.png */; };
+		017741FC2E883B86000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 017741FB2E883B85000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift */; };
+		017741FE2E8941BD000D88DC /* memoryfix.txt in Sources */ = {isa = PBXBuildFile; fileRef = 017741FD2E8941B8000D88DC /* memoryfix.txt */; };
+		0199EA5C2E80596B008D3C74 /* cleanup.old.old in Sources */ = {isa = PBXBuildFile; fileRef = 0199EA5B2E80595C008D3C74 /* cleanup.old.old */; };
+		0199EA5E2E8074F5008D3C74 /* pad.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0199EA5D2E8074EC008D3C74 /* pad.txt */; };
+		0199EA602E808060008D3C74 /* pad2.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0199EA5F2E808056008D3C74 /* pad2.txt */; };
+		01B354EA2E83069D00308547 /* fix.txt in Resources */ = {isa = PBXBuildFile; fileRef = 01B354E92E83069500308547 /* fix.txt */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		01934D4A2E2CF540001AB4EC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 01934D2F2E2CF53D001AB4EC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 01934D362E2CF53D001AB4EC;
+			remoteInfo = real_mo_cap;
+		};
+		01934D542E2CF540001AB4EC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 01934D2F2E2CF53D001AB4EC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 01934D362E2CF53D001AB4EC;
+			remoteInfo = real_mo_cap;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		01168C062E88086B00F54F0B /* old.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = old.txt; sourceTree = "<group>"; };
+		014BA3582E5A3562000C15C0 /* Lifeform.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Lifeform.png; sourceTree = "<group>"; };
+		017741FB2E883B85000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift; sourceTree = "<group>"; };
+		017741FD2E8941B8000D88DC /* memoryfix.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = memoryfix.txt; sourceTree = "<group>"; };
+		01934D372E2CF53D001AB4EC /* real_mo_cap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = real_mo_cap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		01934D492E2CF540001AB4EC /* real_mo_capTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = real_mo_capTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		01934D532E2CF540001AB4EC /* real_mo_capUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = real_mo_capUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0199EA5B2E80595C008D3C74 /* cleanup.old.old */ = {isa = PBXFileReference; lastKnownFileType = text; path = cleanup.old.old; sourceTree = "<group>"; };
+		0199EA5D2E8074EC008D3C74 /* pad.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = pad.txt; sourceTree = "<group>"; };
+		0199EA5F2E808056008D3C74 /* pad2.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = pad2.txt; sourceTree = "<group>"; };
+		01B354E92E83069500308547 /* fix.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = fix.txt; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		0117E37F2E7D8DE300DC0DB5 /* Exceptions for "real_mo_cap" folder in "real_mo_cap" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				unused_old/_MeshBirdLifeformView.old,
+				unused_old/_MeshBirdSimulation.old,
+				unused_old/AnimatedGifView.swiftyy,
+				unused_old/BarleySimulation.old,
+				unused_old/BoidsSimulation.swiftyy,
+				unused_old/CameraGestureOverlay.swiftyy,
+				unused_old/GrowingPlantCaterpillarLifeformView.old,
+				unused_old/GrowingPlantCaterpillarSimulation.old,
+				unused_old/JellyfishLifeformView.yoldy,
+				unused_old/LifeformControlPanel.swiftyy,
+				unused_old/LifeformModeStore.swiftyy,
+				unused_old/PlanetsLifeformView.old,
+				unused_old/SCNViewContainer.swiftyy,
+				unused_old/SimulationManager.swiftyy,
+				unused_old/TwoFingerVerticalDragCapture.swiftyy,
+				unused_old/WorkbenchEnvironment.swiftyy,
+			);
+			target = 01934D362E2CF53D001AB4EC /* real_mo_cap */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		0117E3802E7D8DE300DC0DB5 /* Exceptions for "real_mo_cap" folder in "Compile Sources" phase from "real_mo_cap" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 01934D332E2CF53D001AB4EC /* Sources */;
+			membershipExceptions = (
+				unused_old/_MeshBirdLifeformView.old,
+				unused_old/_MeshBirdSimulation.old,
+				unused_old/AnimatedGifView.swiftyy,
+				unused_old/BarleySimulation.old,
+				unused_old/BoidsSimulation.swiftyy,
+				unused_old/CameraGestureOverlay.swiftyy,
+				unused_old/GrowingPlantCaterpillarLifeformView.old,
+				unused_old/GrowingPlantCaterpillarSimulation.old,
+				unused_old/JellyfishLifeformView.yoldy,
+				unused_old/LifeformControlPanel.swiftyy,
+				unused_old/LifeformModeStore.swiftyy,
+				unused_old/PlanetsLifeformView.old,
+				unused_old/SCNViewContainer.swiftyy,
+				unused_old/SimulationManager.swiftyy,
+				unused_old/TwoFingerVerticalDragCapture.swiftyy,
+				unused_old/WorkbenchEnvironment.swiftyy,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		01934D392E2CF53D001AB4EC /* real_mo_cap */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				0117E37F2E7D8DE300DC0DB5 /* Exceptions for "real_mo_cap" folder in "real_mo_cap" target */,
+				0117E3802E7D8DE300DC0DB5 /* Exceptions for "real_mo_cap" folder in "Compile Sources" phase from "real_mo_cap" target */,
+			);
+			path = real_mo_cap;
+			sourceTree = "<group>";
+		};
+		01934D4C2E2CF540001AB4EC /* real_mo_capTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = real_mo_capTests;
+			sourceTree = "<group>";
+		};
+		01934D562E2CF540001AB4EC /* real_mo_capUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = real_mo_capUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		01934D342E2CF53D001AB4EC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D462E2CF540001AB4EC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D502E2CF540001AB4EC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01934D2E2E2CF53D001AB4EC = {
+			isa = PBXGroup;
+			children = (
+				01934D392E2CF53D001AB4EC /* real_mo_cap */,
+				01934D4C2E2CF540001AB4EC /* real_mo_capTests */,
+				01934D562E2CF540001AB4EC /* real_mo_capUITests */,
+				01934D382E2CF53D001AB4EC /* Products */,
+				014BA3582E5A3562000C15C0 /* Lifeform.png */,
+				0199EA5B2E80595C008D3C74 /* cleanup.old.old */,
+				0199EA5D2E8074EC008D3C74 /* pad.txt */,
+				0199EA5F2E808056008D3C74 /* pad2.txt */,
+				017741FD2E8941B8000D88DC /* memoryfix.txt */,
+				01B354E92E83069500308547 /* fix.txt */,
+				017741FB2E883B85000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift */,
+				01168C062E88086B00F54F0B /* old.txt */,
+			);
+			sourceTree = "<group>";
+		};
+		01934D382E2CF53D001AB4EC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				01934D372E2CF53D001AB4EC /* real_mo_cap.app */,
+				01934D492E2CF540001AB4EC /* real_mo_capTests.xctest */,
+				01934D532E2CF540001AB4EC /* real_mo_capUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		01934D362E2CF53D001AB4EC /* real_mo_cap */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 01934D5D2E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_cap" */;
+			buildPhases = (
+				01934D332E2CF53D001AB4EC /* Sources */,
+				01934D342E2CF53D001AB4EC /* Frameworks */,
+				01934D352E2CF53D001AB4EC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				01934D392E2CF53D001AB4EC /* real_mo_cap */,
+			);
+			name = real_mo_cap;
+			packageProductDependencies = (
+			);
+			productName = real_mo_cap;
+			productReference = 01934D372E2CF53D001AB4EC /* real_mo_cap.app */;
+			productType = "com.apple.product-type.application";
+		};
+		01934D482E2CF540001AB4EC /* real_mo_capTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 01934D602E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_capTests" */;
+			buildPhases = (
+				01934D452E2CF540001AB4EC /* Sources */,
+				01934D462E2CF540001AB4EC /* Frameworks */,
+				01934D472E2CF540001AB4EC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				01934D4B2E2CF540001AB4EC /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				01934D4C2E2CF540001AB4EC /* real_mo_capTests */,
+			);
+			name = real_mo_capTests;
+			packageProductDependencies = (
+			);
+			productName = real_mo_capTests;
+			productReference = 01934D492E2CF540001AB4EC /* real_mo_capTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		01934D522E2CF540001AB4EC /* real_mo_capUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 01934D632E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_capUITests" */;
+			buildPhases = (
+				01934D4F2E2CF540001AB4EC /* Sources */,
+				01934D502E2CF540001AB4EC /* Frameworks */,
+				01934D512E2CF540001AB4EC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				01934D552E2CF540001AB4EC /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				01934D562E2CF540001AB4EC /* real_mo_capUITests */,
+			);
+			name = real_mo_capUITests;
+			packageProductDependencies = (
+			);
+			productName = real_mo_capUITests;
+			productReference = 01934D532E2CF540001AB4EC /* real_mo_capUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		01934D2F2E2CF53D001AB4EC /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1620;
+				LastUpgradeCheck = 1620;
+				TargetAttributes = {
+					01934D362E2CF53D001AB4EC = {
+						CreatedOnToolsVersion = 16.2;
+					};
+					01934D482E2CF540001AB4EC = {
+						CreatedOnToolsVersion = 16.2;
+						TestTargetID = 01934D362E2CF53D001AB4EC;
+					};
+					01934D522E2CF540001AB4EC = {
+						CreatedOnToolsVersion = 16.2;
+						TestTargetID = 01934D362E2CF53D001AB4EC;
+					};
+				};
+			};
+			buildConfigurationList = 01934D322E2CF53D001AB4EC /* Build configuration list for PBXProject "real_mo_cap" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 01934D2E2E2CF53D001AB4EC;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 01934D382E2CF53D001AB4EC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				01934D362E2CF53D001AB4EC /* real_mo_cap */,
+				01934D482E2CF540001AB4EC /* real_mo_capTests */,
+				01934D522E2CF540001AB4EC /* real_mo_capUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		01934D352E2CF53D001AB4EC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0199EA602E808060008D3C74 /* pad2.txt in Resources */,
+				0199EA5E2E8074F5008D3C74 /* pad.txt in Resources */,
+				01B354EA2E83069D00308547 /* fix.txt in Resources */,
+				014BA3592E5A3562000C15C0 /* Lifeform.png in Resources */,
+				01168C072E88087300F54F0B /* old.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D472E2CF540001AB4EC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D512E2CF540001AB4EC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		01934D332E2CF53D001AB4EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				017741FC2E883B86000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift in Sources */,
+				017741FE2E8941BD000D88DC /* memoryfix.txt in Sources */,
+				0199EA5C2E80596B008D3C74 /* cleanup.old.old in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D452E2CF540001AB4EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		01934D4F2E2CF540001AB4EC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		01934D4B2E2CF540001AB4EC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 01934D362E2CF53D001AB4EC /* real_mo_cap */;
+			targetProxy = 01934D4A2E2CF540001AB4EC /* PBXContainerItemProxy */;
+		};
+		01934D552E2CF540001AB4EC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 01934D362E2CF53D001AB4EC /* real_mo_cap */;
+			targetProxy = 01934D542E2CF540001AB4EC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		01934D5B2E2CF540001AB4EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		01934D5C2E2CF540001AB4EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		01934D5E2E2CF540001AB4EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = real_mo_cap/real_mo_cap.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1.01;
+				DEVELOPMENT_ASSET_PATHS = "\"real_mo_cap/Preview Content\"";
+				DEVELOPMENT_TEAM = RPTA5SU4N6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LifeForm;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to advertise and connect as a MIDI device for music and DAW integration.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "lifeform.real-mo-cap";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		01934D5F2E2CF540001AB4EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = real_mo_cap/real_mo_cap.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1.01;
+				DEVELOPMENT_ASSET_PATHS = "\"real_mo_cap/Preview Content\"";
+				DEVELOPMENT_TEAM = RPTA5SU4N6;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LifeForm;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to advertise and connect as a MIDI device for music and DAW integration.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "lifeform.real-mo-cap";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		01934D612E2CF540001AB4EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lifeform.real_mo_capTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/real_mo_cap.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/real_mo_cap";
+			};
+			name = Debug;
+		};
+		01934D622E2CF540001AB4EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lifeform.real_mo_capTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/real_mo_cap.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/real_mo_cap";
+			};
+			name = Release;
+		};
+		01934D642E2CF540001AB4EC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lifeform.real_mo_capUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = real_mo_cap;
+			};
+			name = Debug;
+		};
+		01934D652E2CF540001AB4EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = lifeform.real_mo_capUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = real_mo_cap;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		01934D322E2CF53D001AB4EC /* Build configuration list for PBXProject "real_mo_cap" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01934D5B2E2CF540001AB4EC /* Debug */,
+				01934D5C2E2CF540001AB4EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		01934D5D2E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_cap" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01934D5E2E2CF540001AB4EC /* Debug */,
+				01934D5F2E2CF540001AB4EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		01934D602E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_capTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01934D612E2CF540001AB4EC /* Debug */,
+				01934D622E2CF540001AB4EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		01934D632E2CF540001AB4EC /* Build configuration list for PBXNativeTarget "real_mo_capUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				01934D642E2CF540001AB4EC /* Debug */,
+				01934D652E2CF540001AB4EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 01934D2F2E2CF53D001AB4EC /* Project object */;
+}

@@ -1,0 +1,743 @@
+import SceneKit
+import UIKit
+
+class BoidsSimulation: LifeformSimulation {
+    struct Boid {
+        var position: SCNVector3
+        var velocity: SCNVector3
+        var node: SCNNode
+        var color: UIColor // persist color for scale changes
+        var wanderTime: Float = 0
+        var wanderDir: SCNVector3 = SCNVector3Zero
+        var swimPhase: Float = 0
+        var spine: [SCNNode] = []
+        var tailNode: SCNNode? = nil
+    }
+    
+    // MARK: - Core Craig Reynolds Parameters (minimal)
+    // Ratios are fractions of field size (edge length). They are converted to absolute distances each frame.
+    public var visualRangeRatio: Float = 0.18 { didSet { visualRangeRatio = max(0.01, min(0.9, visualRangeRatio)) } }      // Neighborhood radius / fieldSize
+    public var protectedRangeRatio: Float = 0.12 { didSet { protectedRangeRatio = max(0.005, min(visualRangeRatio * 0.9, protectedRangeRatio)) } } // Collision radius / fieldSize
+    // Behavior factors (classic algorithm style)
+    public var separationFactor: Float = 0.004 { didSet { separationFactor = max(0, separationFactor) } }  // gentler
+    public var alignmentFactor: Float = 0.018 { didSet { alignmentFactor = max(0, alignmentFactor) } }    // gentler
+    public var cohesionFactor: Float = 0.0015 { didSet { cohesionFactor = max(0, cohesionFactor) } }      // gentler
+    // Speed limits
+    public var maxSpeed: Float = 0.35 { didSet { maxSpeed = max(0.01, maxSpeed); if minSpeed > maxSpeed { minSpeed = maxSpeed * 0.5 } } }
+    public var minSpeed: Float = 0.12 { didSet { minSpeed = max(0, minSpeed); if minSpeed > maxSpeed { minSpeed = maxSpeed * 0.5 } } }
+    // Boundary turning (only when wrapping disabled)
+    public var turnMargin: Float = 0.9 { didSet { turnMargin = max(0.01, min(fieldHalfSize * 0.9, turnMargin)) } }
+    public var turnFactor: Float = 0.06 { didSet { turnFactor = max(0, turnFactor) } }
+    // Smooth edge steering options
+    public var smoothEdgeTurning: Bool = true // if true use graded inward steering
+    public var edgeSoftMultiplier: Float = 2.0 { didSet { edgeSoftMultiplier = max(1.0, min(4.0, edgeSoftMultiplier)) } } // soft zone = turnMargin * this
+    public var edgePredictionTime: Float = 0.35 { didSet { edgePredictionTime = max(0, min(2, edgePredictionTime)) } } // lookahead (scaled by current speed)
+    // Optional bounds visualization (disabled)
+    public var showBoundsWireframe: Bool = false // deprecated: wireframe cube disabled
+    
+    // MARK: - Wander Parameters
+    public var wanderEnabled: Bool = true
+    public var wanderChancePerSecond: Float = 0.12 { didSet { wanderChancePerSecond = max(0, wanderChancePerSecond) } }
+    public var wanderDurationRange: (Float,Float) = (0.2, 1.5) // seconds
+    // During wandering, alignment & cohesion are scaled by these multipliers (<1 loosens formation)
+    public var wanderAlignmentScale: Float = 0.25 { didSet { wanderAlignmentScale = max(0, min(1, wanderAlignmentScale)) } }
+    public var wanderCohesionScale: Float = 0.15 { didSet { wanderCohesionScale = max(0, min(1, wanderCohesionScale)) } }
+    // Random jitter impulse strength applied each frame while wandering (acts like extra acceleration)
+    public var wanderJitterStrength: Float = 0.012 { didSet { wanderJitterStrength = max(0, wanderJitterStrength) } } // was 0.02
+    public var maxSimultaneousWanderers: Int = 6 { didSet { maxSimultaneousWanderers = max(0, maxSimultaneousWanderers) } }
+    
+    // MARK: - Internal State
+    private let baseFieldSize: Float = 20.0
+    private var boundsNode: SCNNode? = nil
+    private var wrappingEnabled: Bool = false
+    private var userOffset: SCNVector3 = SCNVector3Zero
+    private var globalScale: Float = 1.0
+    private var boids: [Boid] = []
+    private var rootNode: SCNNode = SCNNode()
+    weak var scnView: SCNView?
+    private var sceneReference: SCNScene?
+    private let numBoids = 20
+    private var fishSize: Float = 0.5 // default fish size
+    private var speedMultiplier: Float = 1.0
+    private var boundsCircleNode: SCNNode? = nil
+    public var showBoundsCircle: Bool = false { didSet { if showBoundsCircle { ensureBoundsCircleNode() } else { boundsCircleNode?.removeFromParentNode(); boundsCircleNode = nil } } }
+    private var boundsFlashWork: DispatchWorkItem? = nil
+    public var showBoundsCube: Bool = false {
+        didSet {
+            if showBoundsCube {
+                ensureBoundsCubeNode()
+            } else {
+                boundsNode?.removeFromParentNode()
+                boundsNode = nil
+            }
+        }
+    }
+    private var backgroundSphereNode: SCNNode? = nil
+
+    // Derived
+    var fieldHalfSize: Float { baseFieldSize / 2 }
+    var visualBounds: Float { baseFieldSize } // simple now
+    /*
+    // Projected diameter of the flock field (circle that encloses cube) in screen points
+    public func projectedFieldDiameter(in scnView: SCNView) -> CGFloat? {
+        // Use all 8 corners to find the max distance from projected center to ensure the circle fully encloses bounds.
+        let half = fieldHalfSize
+        let centerWorld = rootNode.convertPosition(SCNVector3Zero, to: nil)
+        let projectedCenter = scnView.projectPoint(centerWorld)
+        if projectedCenter.x.isNaN || projectedCenter.y.isNaN { return nil }
+        var maxDist2: CGFloat = 0
+        for sx in [-half, half] {
+            for sy in [-half, half] {
+                for sz in [-half, half] {
+                    let local = SCNVector3(sx, sy, sz)
+                    let world = rootNode.convertPosition(local, to: nil)
+                    let p = scnView.projectPoint(world)
+                    if p.x.isNaN || p.y.isNaN { continue }
+                    let dx = CGFloat(p.x - projectedCenter.x)
+                    let dy = CGFloat(p.y -  projectedCenter.y)
+                    let d2 = dx*dx + dy*dy
+                    if d2 > maxDist2 { maxDist2 = d2 }
+                }
+            }
+        }
+        if maxDist2 <= 0 { return nil }
+        return sqrt(maxDist2) * 2
+    }
+    // Full circle (center + diameter) for overlay
+    public func projectedFieldCircle(in scnView: SCNView) -> (center: CGPoint, diameter: CGFloat)? {
+        let half = fieldHalfSize
+        let centerWorld = rootNode.convertPosition(SCNVector3Zero, to: nil)
+        let pCenter = scnView.projectPoint(centerWorld)
+        if pCenter.x.isNaN || pCenter.y.isNaN { return nil }
+        var maxDist2: CGFloat = 0
+        for sx in [-half, half] {
+            for sy in [-half, half] {
+                for sz in [-half, half] {
+                    let local = SCNVector3(sx, sy, sz)
+                    let world = rootNode.convertPosition(local, to: nil)
+                    let p = scnView.projectPoint(world)
+                    if p.x.isNaN || p.y.isNaN { continue }
+                    let dx = CGFloat(p.x - pCenter.x)
+                    let dy = CGFloat(p.y - pCenter.y)
+                    let d2 = dx*dx + dy*dy
+                    if d2 > maxDist2 { maxDist2 = d2 }
+                }
+            }
+        }
+        if maxDist2 <= 0 { return nil }
+        let radius = sqrt(maxDist2)
+        let h = scnView.bounds.height
+        // Convert SceneKit (origin bottom-left) to SwiftUI (origin top-left)
+        let centerPoint = CGPoint(x: CGFloat(pCenter.x), y: h - CGFloat(pCenter.y))
+        return (centerPoint, radius * 2)
+    }
+    */
+    init(scene: SCNScene, scnView: SCNView?) {
+        self.sceneReference = scene
+        self.scnView = scnView
+        setupLighting(in: scene)
+        setupBackgroundSphere(in: scene)
+        setupBoids(in: scene)
+    }
+    
+    // MARK: Setup
+    private func setupLighting(in scene: SCNScene) {
+        // Remove ambient and side lights; only use top-down directional light
+        let topDir = SCNNode(); topDir.light = SCNLight(); topDir.light?.type = .directional; topDir.light?.color = UIColor(white: 1.0, alpha: 1); topDir.light?.intensity = 1800; topDir.position = SCNVector3(5, 10, 0); topDir.eulerAngles = SCNVector3(-Float.pi/2, 0, 0); scene.rootNode.addChildNode(topDir)
+    }
+    
+    private func setupBoids(in scene: SCNScene) {
+        rootNode.removeFromParentNode()
+        rootNode = SCNNode(); boids.removeAll()
+        let half = fieldHalfSize
+        let palette: [UIColor] = [.systemRed, .systemOrange, .systemYellow, .systemGreen, .systemBlue]
+        let bodyLength: Float = fishSize * 3.0
+        let bodyRadius: Float = fishSize * 0.55
+        for i in 0..<numBoids {
+            let pos = SCNVector3(Float.random(in: -half...half), Float.random(in: -half...half), Float.random(in: -half...half))
+            let vel = SCNVector3(Float.random(in: -0.15...0.15), Float.random(in: -0.15...0.15), Float.random(in: -0.15...0.15))
+            let color = i < palette.count ? palette[i] : .systemTeal
+            let node = makeFishNode(bodyLength: CGFloat(bodyLength), bodyRadius: CGFloat(bodyRadius), color: color)
+            node.position = pos
+            rootNode.addChildNode(node)
+            var boid = Boid(position: pos, velocity: vel, node: node, color: color)
+            let rig = getFishRigNodes(from: node)
+            boid.spine = rig.spine
+            boid.tailNode = rig.tail
+            boids.append(boid)
+        }
+        scene.rootNode.addChildNode(rootNode)
+        rootNode.scale = SCNVector3(globalScale, globalScale, globalScale)
+    }
+    
+    private func setupBackgroundSphere(in scene: SCNScene) {
+        backgroundSphereNode?.removeFromParentNode()
+        let sphere = SCNSphere(radius: 20)
+        sphere.segmentCount = 48
+        let mat = SCNMaterial()
+        mat.diffuse.contents = makeBlueGradientImage(size: CGSize(width: 512, height: 512))
+        mat.isDoubleSided = true
+        mat.lightingModel = .constant
+        sphere.materials = [mat]
+        let node = SCNNode(geometry: sphere)
+        node.position = SCNVector3Zero
+        node.renderingOrder = -100
+        scene.rootNode.addChildNode(node)
+        backgroundSphereNode = node
+    }
+    private func ensureBoundsCircleNode() {
+        guard boundsCircleNode == nil else { return }
+        // Create a thin ring using SCNTube (inner/outer radius set later)
+        let tube = SCNTube(innerRadius: 0.9, outerRadius: 1.0, height: 0.0005)
+        let m = SCNMaterial()
+        m.diffuse.contents = UIColor.white
+        m.emission.contents = UIColor.white
+        m.lightingModel = .constant
+        m.isDoubleSided = true
+        m.writesToDepthBuffer = false
+        m.readsFromDepthBuffer = false
+        tube.materials = [m]
+        let node = SCNNode(geometry: tube)
+        // Billboard so it always faces the camera (circle appearance)
+        let bb = SCNBillboardConstraint()
+        bb.freeAxes = []
+        node.constraints = [bb]
+        node.name = "BoundsCircle"
+        rootNode.addChildNode(node)
+        boundsCircleNode = node
+    }
+    private func updateBoundsCircleNode(in scnView: SCNView) {
+        guard showBoundsCircle else { return }
+        ensureBoundsCircleNode()
+        guard let ring = boundsCircleNode else { return }
+        // Project center
+        let centerWorld = rootNode.convertPosition(SCNVector3Zero, to: nil)
+        let pCenter = scnView.projectPoint(centerWorld)
+        if pCenter.x.isNaN || pCenter.y.isNaN { return }
+        // Find max screen distance to cube corners (like projectedFieldCircle but unflipped)
+        let half = fieldHalfSize
+        var maxDist2: CGFloat = 0
+        for sx in [-half, half] {
+            for sy in [-half, half] {
+                for sz in [-half, half] {
+                    let local = SCNVector3(sx, sy, sz)
+                    let world = rootNode.convertPosition(local, to: nil)
+                    let p = scnView.projectPoint(world)
+                    if p.x.isNaN || p.y.isNaN { continue }
+                    let dx = CGFloat(p.x - pCenter.x)
+                    let dy = CGFloat(p.y - pCenter.y)
+                    let d2 = dx*dx + dy*dy
+                    if d2 > maxDist2 { maxDist2 = d2 }
+                }
+            }
+        }
+        if maxDist2 <= 0 { return }
+        let radiusScreen = sqrt(maxDist2)
+        // Compute world radius by unprojecting a point at same depth offset by radiusScreen in x
+        let edgeScreen = SCNVector3(pCenter.x + Float(radiusScreen), pCenter.y, pCenter.z)
+        let edgeWorld = scnView.unprojectPoint(edgeScreen)
+        let rVec = SCNVector3(edgeWorld.x - centerWorld.x, edgeWorld.y - centerWorld.y, edgeWorld.z - centerWorld.z)
+        let rWorld = max(0.0001, sqrt(rVec.x*rVec.x + rVec.y*rVec.y + rVec.z*rVec.z))
+        if let tube = ring.geometry as? SCNTube {
+            tube.innerRadius = CGFloat(rWorld) - 0.005 * CGFloat(rWorld)
+            tube.outerRadius = CGFloat(rWorld) + 0.005 * CGFloat(rWorld)
+            tube.height = 0.0005 * CGFloat(rWorld)
+        }
+        // Position ring at simulation center (includes userOffset via rootNode positioning)
+        ring.position = SCNVector3Zero
+        // Slightly raise on Z to reduce z-fighting
+        ring.renderingOrder = 1000
+    }
+    
+    private func ensureBoundsCubeNode() {
+        guard boundsNode == nil else { return }
+        let half = fieldHalfSize
+        let box = SCNBox(width: CGFloat(half * 2), height: CGFloat(half * 2), length: CGFloat(half * 2), chamferRadius: 0)
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor.white.withAlphaComponent(0.13)
+        material.emission.contents = UIColor.white.withAlphaComponent(0.18)
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        box.materials = [material]
+        let node = SCNNode(geometry: box)
+        node.position = SCNVector3Zero
+        node.name = "BoundsCube"
+        node.opacity = 0.7
+        node.renderingOrder = 1000 // draw on top
+        rootNode.addChildNode(node)
+        boundsNode = node
+    }
+    
+    // MARK: Public Controls (compatibility)
+    func setSpeedMultiplier(_ multiplier: Float) { speedMultiplier = max(0, multiplier) }
+    func setWrappingEnabled(_ enabled: Bool) { wrappingEnabled = enabled }
+    func translate(dx: Float, dy: Float, dz: Float) { userOffset.x += dx; userOffset.y += dy; userOffset.z += dz }
+    func setGlobalScale(_ scale: Float) { let s = max(0.1, scale); globalScale = s; rootNode.scale = SCNVector3(s,s,s) }
+    func reset() { userOffset = SCNVector3Zero; setupBoids(in: sceneReference!) }
+    func setShowBoundsCircle(_ v: Bool) { showBoundsCircle = v }
+    func setWanderEnabled(_ v: Bool) { wanderEnabled = v }
+    func setWanderChancePerSecond(_ v: Float) { wanderChancePerSecond = max(0,v) }
+    func setWanderJitterStrength(_ v: Float) { wanderJitterStrength = max(0,v) }
+    func setShowBoundsCube(_ v: Bool) { showBoundsCube = v }
+    // Add method to set fish size and update all fish
+    func setFishSize(_ size: Float) {
+        let clamped = max(0.1, min(size, 5.0))
+        fishSize = clamped
+        // Update all fish nodes by restoring original geometry proportions
+        let bodyLength: Float = fishSize * 3.0
+        let bodyRadius: Float = fishSize * 0.55
+        for boid in boids {
+            if let model = boid.node.childNode(withName: "Model", recursively: false) {
+                // Get bodyA and bodyB nodes once
+                let bodyA = model.childNodes.first(where: { $0.geometry is SCNSphere && abs($0.scale.y - 2.2) < 0.01 })
+                let bodyB = model.childNodes.first(where: { $0.geometry is SCNSphere && abs($0.scale.y - 1.3) < 0.01 })
+                // Restore original scale and position for bodyA and bodyB
+                if let sphereA = bodyA?.geometry as? SCNSphere {
+                    sphereA.radius = CGFloat(bodyRadius)
+                }
+                bodyA?.scale = SCNVector3(0.75, 2.2, 0.75)
+                bodyA?.position = SCNVector3(0, bodyLength * 0.18, 0)
+                if let sphereB = bodyB?.geometry as? SCNSphere {
+                    sphereB.radius = CGFloat(bodyRadius)
+                }
+                bodyB?.scale = SCNVector3(0.5, 1.5, 0.5)
+                bodyB?.position = SCNVector3(0, -bodyLength * 0.15, 0)
+                // Tail geometry and position
+                if let tail = model.childNode(withName: "Tail", recursively: false), let tailGeom = tail.geometry as? SCNPyramid {
+                    tailGeom.width = CGFloat(bodyRadius) * 0.4
+                    tailGeom.length = CGFloat(bodyRadius) * 1.0
+                    tailGeom.height = CGFloat(bodyRadius) * 1.0
+                    tail.position = SCNVector3(0, -bodyLength * 0.5, 0)
+                }
+                // Eyes geometry and position
+                for eye in model.childNodes.flatMap({ $0.childNodes }).filter({ $0.geometry is SCNSphere }) {
+                    if let eyeGeom = eye.geometry as? SCNSphere {
+                        eyeGeom.radius = CGFloat(bodyRadius * 0.22)
+                        let eyeYOffset = bodyLength * 0.30
+                        let eyeXOffset = bodyRadius * 0.6
+                        let eyeZOffset = bodyRadius * 0.25
+                        let side = eye.position.x < 0 ? -1.0 : 1.0
+                        let bodyAY = bodyA?.position.y ?? 0
+                        eye.position = SCNVector3(eyeXOffset * Float(side), eyeYOffset - bodyAY, eyeZOffset)
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Simulation Update
+    func update(deltaTime: Float) {
+        // Precompute absolute ranges
+        let visualRange = visualRangeRatio * baseFieldSize
+        let protectedRange = protectedRangeRatio * baseFieldSize
+        let vr2 = visualRange * visualRange
+        let pr2 = protectedRange * protectedRange
+        let half = fieldHalfSize
+        var newBoids: [Boid] = []
+        newBoids.reserveCapacity(boids.count)
+        // --- Build spatial grid ---
+        let cellSize = visualRange
+        var grid: [GridCell: [Int]] = [:]
+        for (i, boid) in boids.enumerated() {
+            let cell = gridCell(for: boid.position, cellSize: cellSize)
+            grid[cell, default: []].append(i)
+        }
+        // Count current wanderers
+        var activeWanderers = 0
+        for b in boids { if b.wanderTime > 0 { activeWanderers += 1 } }
+        for i in 0..<boids.count {
+            var b = boids[i]
+            // Possibly start wandering
+            if wanderEnabled && b.wanderTime <= 0 && activeWanderers < maxSimultaneousWanderers {
+                let p = wanderChancePerSecond * deltaTime
+                if Float.random(in: 0...1) < p {
+                    b.wanderTime = Float.random(in: wanderDurationRange.0...wanderDurationRange.1)
+                    b.wanderDir = randomUnitVector()
+                    activeWanderers += 1
+                }
+            }
+            var close = SCNVector3Zero
+            var avgPos = SCNVector3Zero
+            var avgVel = SCNVector3Zero
+            var count: Float = 0
+            var alignmentWeight: Float = 0
+            var cohesionWeight: Float = 0
+            // --- Optimized neighbor search ---
+            let myCell = gridCell(for: b.position, cellSize: cellSize)
+            for dx in -1...1 {
+                for dy in -1...1 {
+                    for dz in -1...1 {
+                        let neighborCell = GridCell(x: myCell.x + dx, y: myCell.y + dy, z: myCell.z + dz)
+                        if let indices = grid[neighborCell] {
+                            for j in indices where j != i {
+                                let other = boids[j]
+                                let dx = b.position.x - other.position.x
+                                let dy = b.position.y - other.position.y
+                                let dz = b.position.z - other.position.z
+                                let dist2 = dx*dx + dy*dy + dz*dz
+                                let dist = sqrt(dist2)
+                                if dist2 < pr2 {
+                                    close.x += dx; close.y += dy; close.z += dz
+                                } else if dist2 < vr2 {
+                                    // Quadratic easing for alignment/cohesion
+                                    let t = max(0, min(1, 1.0 - dist / visualRange))
+                                    let ease = t * t
+                                    avgPos = SCNVector3Add(avgPos, SCNVector3Multiply(other.position, ease))
+                                    avgVel = SCNVector3Add(avgVel, SCNVector3Multiply(other.velocity, ease))
+                                    alignmentWeight += ease
+                                    cohesionWeight += ease
+                                    count += ease
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Factors may be reduced if wandering
+            let alignmentScale = (b.wanderTime > 0) ? wanderAlignmentScale : 1.0
+            let cohesionScale = (b.wanderTime > 0) ? wanderCohesionScale : 1.0
+            if count > 0 {
+                let inv = 1.0 / count
+                avgPos = SCNVector3Multiply(avgPos, inv)
+                avgVel = SCNVector3Multiply(avgVel, inv)
+                // Cohesion
+                let toCenter = SCNVector3Subtract(avgPos, b.position)
+                var cohesionSteer = SCNVector3Multiply(toCenter, cohesionFactor * cohesionScale)
+                // Clamp steering force
+                let cohLen = cohesionSteer.length()
+                if cohLen > maxSteeringForce { cohesionSteer = SCNVector3Multiply(cohesionSteer, maxSteeringForce / cohLen) }
+                b.velocity = SCNVector3Add(b.velocity, cohesionSteer)
+                // Alignment
+                let match = SCNVector3Subtract(avgVel, b.velocity)
+                var alignmentSteer = SCNVector3Multiply(match, alignmentFactor * alignmentScale)
+                let alignLen = alignmentSteer.length()
+                if alignLen > maxSteeringForce { alignmentSteer = SCNVector3Multiply(alignmentSteer, maxSteeringForce / alignLen) }
+                b.velocity = SCNVector3Add(b.velocity, alignmentSteer)
+            }
+            if (close.x != 0 || close.y != 0 || close.z != 0) { // Separation (push away)
+                var sepSteer = SCNVector3Multiply(close, separationFactor)
+                let sepLen = sepSteer.length()
+                if sepLen > maxSteeringForce { sepSteer = SCNVector3Multiply(sepSteer, maxSteeringForce / sepLen) }
+                b.velocity = SCNVector3Add(b.velocity, sepSteer)
+            }
+            // Wander jitter & gentle steering while active
+            if wanderEnabled && b.wanderTime > 0 {
+                b.wanderTime -= deltaTime
+                if b.wanderTime <= 0 { b.wanderTime = 0 }
+                // Slightly change direction over time for smoothness
+                let jitterDir = randomUnitVector()
+                // Blend old wanderDir and new random to avoid harsh changes
+                b.wanderDir = SCNVector3(
+                    (b.wanderDir.x * 0.85 + jitterDir.x * 0.15),
+                    (b.wanderDir.y * 0.85 + jitterDir.y * 0.15),
+                    (b.wanderDir.z * 0.85 + jitterDir.z * 0.15)
+                )
+                // Normalize
+                let len = b.wanderDir.length()
+                if len > 0.0001 { b.wanderDir = SCNVector3(b.wanderDir.x/len, b.wanderDir.y/len, b.wanderDir.z/len) }
+                b.velocity = SCNVector3Add(b.velocity, SCNVector3MultiplyScalar(b.wanderDir, wanderJitterStrength))
+            }
+            // Boundaries
+            if wrappingEnabled {
+                b.position = wrap(b.position, half: half)
+            } else {
+                if smoothEdgeTurning {
+                    // Soft steering with distance-based scaling + simple lookahead
+                    let softMargin = min(turnMargin * edgeSoftMultiplier, half * 0.95)
+                    func steerAxis(pos: Float, vel: Float) -> Float {
+                        let future = pos + vel * edgePredictionTime
+                        let aPos = abs(future)
+                        let innerStart = half - softMargin
+                        if aPos <= innerStart { return vel } // far from wall
+                        let distToEdge = half - aPos // ( <= softMargin )
+                        let t = max(0, min(1, 1 - distToEdge / softMargin)) // 0..1 ramp
+                        // Apply proportional inward push scaled by t (smooth), squared easing for gentler entry
+                        let strength = turnFactor * (t * t + 0.05) // small base to start early
+                        let direction: Float = (future > 0) ? -1 : 1
+                        return vel + direction * strength
+                    }
+                    b.velocity.x = steerAxis(pos: b.position.x, vel: b.velocity.x)
+                    b.velocity.y = steerAxis(pos: b.position.y, vel: b.velocity.y)
+                    b.velocity.z = steerAxis(pos: b.position.z, vel: b.velocity.z)
+                } else {
+                    // Original abrupt turning
+                    if b.position.x > half - turnMargin { b.velocity.x -= turnFactor } else if b.position.x < -half + turnMargin { b.velocity.x += turnFactor }
+                    if b.position.y > half - turnMargin { b.velocity.y -= turnFactor } else if b.position.y < -half + turnMargin { b.velocity.y += turnFactor }
+                    if b.position.z > half - turnMargin { b.velocity.z -= turnFactor } else if b.position.z < -half + turnMargin { b.velocity.z += turnFactor }
+                }
+            }
+            // Speed clamp
+            let sp = b.velocity.length()
+            if sp > maxSpeed { b.velocity = SCNVector3MultiplyScalar(b.velocity, maxSpeed / max(sp, 0.0001)) }
+            else if sp < minSpeed && sp > 0 { b.velocity = SCNVector3MultiplyScalar(b.velocity, minSpeed / sp) }
+            // Integrate
+            b.position = SCNVector3Add(b.position, SCNVector3Multiply(b.velocity, speedMultiplier))
+            if !wrappingEnabled { // keep inside
+                b.position.x = min(max(b.position.x, -half), half)
+                b.position.y = min(max(b.position.y, -half), half)
+                b.position.z = min(max(b.position.z, -half), half)
+            }
+            b.node.position = b.position
+            orientTetra(node: b.node, velocity: b.velocity)
+            applySwimAnimation(boid: &b, deltaTime: deltaTime)
+            // --- After all steering forces, blend velocity for smoothness ---
+            b.velocity = SCNVector3Lerp(boids[i].velocity, b.velocity, velocitySmoothFactor)
+            newBoids.append(b)
+        }
+        boids = newBoids
+        rootNode.position = userOffset
+        if let v = scnView { updateBoundsCircleNode(in: v) }
+    }
+    
+    // MARK: - Helpers
+    private func wrap(_ p: SCNVector3, half: Float) -> SCNVector3 {
+        var r = p
+        let h = half
+        if r.x < -h { r.x = h } else if r.x > h { r.x = -h }
+        if r.y < -h { r.y = h } else if r.y > h { r.y = -h }
+        if r.z < -h { r.z = h } else if r.z > h { r.z = -h }
+        return r
+    }
+    
+    private func randomUnitVector() -> SCNVector3 {
+        while true {
+            let x = Float.random(in: -1...1)
+            let y = Float.random(in: -1...1)
+            let z = Float.random(in: -1...1)
+            let l2 = x*x + y*y + z*z
+            if l2 > 0.0001 && l2 <= 1 { let inv = 1 / sqrt(l2); return SCNVector3(x*inv,y*inv,z*inv) }
+        }
+    }
+    // Helper to interpolate between two SCNVector3s
+    private func SCNVector3Lerp(_ a: SCNVector3, _ b: SCNVector3, _ t: Float) -> SCNVector3 {
+        return SCNVector3(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t
+        )
+    }
+    // Bridging helpers (legacy naming used by existing flock logic)
+    @inline(__always) private func SCNVector3Add(_ a: SCNVector3, _ b: SCNVector3) -> SCNVector3 { a + b }
+    @inline(__always) private func SCNVector3Subtract(_ a: SCNVector3, _ b: SCNVector3) -> SCNVector3 { a - b }
+    @inline(__always) private func SCNVector3Multiply(_ v: SCNVector3, _ s: Float) -> SCNVector3 { v * s }
+    @inline(__always) private func SCNVector3MultiplyScalar(_ v: SCNVector3, _ s: Float) -> SCNVector3 { v * s }
+    
+    // Public info helpers (kept for trackers / MIDI)
+    func boidCount() -> Int { boids.count }
+    func boidPosition(index: Int) -> SCNVector3? { (0..<boids.count).contains(index) ? boids[index].position : nil }
+    func boidVelocity(index: Int) -> SCNVector3? { (0..<boids.count).contains(index) ? boids[index].velocity : nil }
+    func centroid() -> SCNVector3 { guard !boids.isEmpty else { return SCNVector3Zero }; var sum = SCNVector3Zero; for b in boids { sum = SCNVector3Add(sum, b.position) }; return SCNVector3Multiply(sum, 1 / Float(boids.count)) }
+    func averageVelocity() -> SCNVector3 { guard !boids.isEmpty else { return SCNVector3Zero }; var sum = SCNVector3Zero; for b in boids { sum = SCNVector3Add(sum, b.velocity) }; return SCNVector3Multiply(sum, 1 / Float(boids.count)) }
+    func maxSpeedValue() -> Float { maxSpeed * speedMultiplier }
+    
+    // Screen-space projection helpers returning 0-127 coordinates (used by view / MIDI trackers)
+    func projectedBoidXY127(index: Int) -> (x: Int, y: Int)? {
+        guard let scnView = scnView, (0..<boids.count).contains(index) else { return nil }
+        let worldPos = boids[index].node.presentation.worldPosition
+        let p = scnView.projectPoint(worldPos)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let xView = CGFloat(p.x)
+        let yView = h - CGFloat(p.y) // flip y
+        let x127 = Int(round(min(max(xView, 0), w) / w * 127))
+        let y127 = Int(round(min(max(yView, 0), h) / h * 127))
+        return (x127, y127)
+    }
+    func projectedCentroidXY127() -> (x: Int, y: Int)? {
+        guard let scnView = scnView else { return nil }
+        let localC = centroid()
+        let worldC = rootNode.convertPosition(localC, to: nil)
+        let p = scnView.projectPoint(worldC)
+        let w = max(scnView.bounds.width, 1)
+        let h = max(scnView.bounds.height, 1)
+        let xView = CGFloat(p.x)
+        let yView = h - CGFloat(p.y)
+        let x127 = Int(round(min(max(xView, 0), w) / w * 127))
+        let y127 = Int(round(min(max(yView, 0), h) / h * 127))
+        return (x127, y127)
+    }
+    
+    // Orientation helper
+    private func orientTetra(node: SCNNode, velocity: SCNVector3) { // now generic orient helper
+        let len = velocity.length(); if len < 0.0001 { return }
+        let dir = SCNVector3(velocity.x/len, velocity.y/len, velocity.z/len)
+        let up = SCNVector3(0,1,0)
+        var dot = up.x*dir.x + up.y*dir.y + up.z*dir.z
+        dot = max(-1, min(1, dot))
+        if dot > 0.9995 { node.rotation = SCNVector4(0,0,1,0); return }
+        if dot < -0.9995 { node.rotation = SCNVector4(1,0,0,Float.pi); return }
+        let ax = SCNVector3(up.y*dir.z - up.z*dir.y, up.z*dir.x - up.x*dir.z, up.x*dir.y - up.y*dir.x)
+        let axLen = sqrt(ax.x*ax.x + ax.y*ax.y + ax.z*ax.z); if axLen < 0.0001 { return }
+        let n = SCNVector3(ax.x/axLen, ax.y/axLen, ax.z/axLen)
+        let angle = acos(dot)
+        node.rotation = SCNVector4(n.x, n.y, n.z, angle)
+    }
+    
+    // MARK: - Fish rig discovery
+    private func getFishRigNodes(from root: SCNNode) -> (spine: [SCNNode], tail: SCNNode?) {
+        var spine: [SCNNode] = []
+        root.enumerateChildNodes { n, _ in
+            if let name = n.name, name.hasPrefix("Spine_") {
+                spine.append(n)
+            }
+        }
+        spine.sort { (a, b) -> Bool in
+            let ai = Int(a.name?.replacingOccurrences(of: "Spine_", with: "") ?? "0") ?? 0
+            let bi = Int(b.name?.replacingOccurrences(of: "Spine_", with: "") ?? "0") ?? 0
+            return ai < bi
+        }
+        let tail = root.childNode(withName: "Tail", recursively: true)
+        return (spine, tail)
+    }
+    
+    // MARK: - Swim animation
+    private func applySwimAnimation(boid b: inout Boid, deltaTime: Float) {
+        let sp = b.velocity.length()
+        let speedFactor = min(1.0, sp / max(0.0001, maxSpeed))
+        let baseFreq: Float = 4.0 // increased from 2.0
+        let speedFreq: Float = 12.0 // increased from 6.0
+        b.swimPhase += deltaTime * (baseFreq + speedFreq * speedFactor)
+        // Pronounced spine wiggle: rotate bodyA/bodyB in opposite directions
+        let spineAmp: Float = 0.25 * (0.7 + 0.7 * speedFactor) // more pronounced
+        let spineAngle = sin(b.swimPhase) * spineAmp
+        if let model = b.node.childNode(withName: "Model", recursively: false) {
+            let bodyA = model.childNodes.first(where: { $0.geometry is SCNSphere && abs($0.scale.y - 2.2) < 0.01 })
+            let bodyB = model.childNodes.first(where: { $0.geometry is SCNSphere && abs($0.scale.y - 2.0) < 0.01 })
+            bodyA?.eulerAngles.z = spineAngle
+            bodyB?.eulerAngles.z = -spineAngle
+        }
+        // More pronounced tail wag
+        if let tail = b.tailNode {
+            let tailAmp: Float = 0.65 * (0.7 + 0.7 * speedFactor)
+            tail.eulerAngles.z = sin(b.swimPhase + 0.6) * tailAmp
+        }
+    }
+}
+
+// MARK: - Fish composite helper
+private extension BoidsSimulation {
+    func makeFishNode(bodyLength: CGFloat, bodyRadius: CGFloat, color: UIColor) -> SCNNode {
+        // Root holder; +Y is forward
+        let root = SCNNode()
+        let model = SCNNode(); model.name = "Model"; root.addChildNode(model)
+        // Two intersecting elongated spheres (ellipsoids)
+        let sphereGeomA = SCNSphere(radius: bodyRadius)
+        let sphereGeomB = SCNSphere(radius: bodyRadius)
+        let bodyMat = SCNMaterial()
+        bodyMat.diffuse.contents = color
+        bodyMat.specular.contents = UIColor(red: 0.8, green: 0.95, blue: 1.0, alpha: 1.0) // light blue-white
+        bodyMat.metalness.contents = 0.4
+        bodyMat.roughness.contents = 0.15
+        bodyMat.lightingModel = .physicallyBased
+        sphereGeomA.materials = [bodyMat]
+        sphereGeomB.materials = [bodyMat]
+        let bodyA = SCNNode(geometry: sphereGeomA)
+        let bodyB = SCNNode(geometry: sphereGeomB)
+        // Elongate along +Y (fish forward axis) and slightly slim X/Z
+        bodyA.scale = SCNVector3(0.75, 2.2, 0.75)
+        bodyB.scale = SCNVector3(0.6, 1.3, 0.6) // smaller rear sphere
+        // Slight offset to create an intersecting body mass
+        bodyA.position = SCNVector3(0, Float(bodyLength) * 0.18, 0)
+        bodyB.position = SCNVector3(0, -Float(bodyLength) * 0.15, 0) // further back
+        model.addChildNode(bodyA)
+        model.addChildNode(bodyB)
+        // Tail: narrow base, tall pyramid, metallic
+        let tailWidth = CGFloat(bodyRadius) * 0.4 // much narrower base
+        let tailLength = CGFloat(bodyRadius) * 1.0 // unchanged
+        let tailHeight = CGFloat(bodyRadius) * 1.0 // unchanged
+        let tailGeom = SCNPyramid(width: tailWidth, height: tailHeight, length: tailLength)
+        let tailMat = SCNMaterial()
+        tailMat.diffuse.contents = color.withAlphaComponent(0.85).darker(by: 0.2)
+        tailMat.specular.contents = UIColor(red: 0.8, green: 0.95, blue: 1.0, alpha: 1.0)
+        tailMat.metalness.contents = 0.85
+        tailMat.roughness.contents = 0.13
+        tailMat.lightingModel = .physicallyBased
+        tailGeom.materials = [tailMat]
+        let tailNode = SCNNode(geometry: tailGeom)
+        tailNode.name = "Tail"
+        // Set pivot to tip (narrow end) of pyramid
+        tailNode.pivot = SCNMatrix4MakeTranslation(0, Float(tailHeight)/2, 0)
+        // Place near rear
+        tailNode.position = SCNVector3(0, -Float(bodyLength) * 0.5, 0)
+        // Small rotation to avoid z-fighting/flat look
+        tailNode.eulerAngles.z = Float.pi * 0.02
+        model.addChildNode(tailNode)
+        // Eyes (reuse existing simple spheres)
+        let eyeRadius = bodyRadius * 0.22
+        let eyeGeom = SCNSphere(radius: eyeRadius)
+        let eyeMat = SCNMaterial(); eyeMat.diffuse.contents = UIColor.black; eyeMat.specular.contents = UIColor.white; eyeGeom.materials = [eyeMat]
+        let eyeYOffset = Float(bodyLength) * 0.30// moved further back from 0.42
+        let eyeXOffset = Float(bodyRadius) * 0.6
+        let eyeZOffset = Float(bodyRadius) * 0.25
+        for side in [-1.0, 1.0] {
+            let e = SCNNode(geometry: eyeGeom)
+            e.position = SCNVector3(eyeXOffset * Float(side), eyeYOffset - bodyA.position.y, eyeZOffset)
+            bodyA.addChildNode(e)
+        }
+        return root
+    }
+}
+
+// MARK: - UIColor helper
+private extension UIColor {
+    func darker(by amount: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        if getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return UIColor(red: max(r - amount, 0), green: max(g - amount, 0), blue: max(b - amount, 0), alpha: a)
+        }
+        return self
+    }
+    func lighter(by amount: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        if getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return UIColor(red: min(r + amount, 1), green: min(g + amount, 1), blue: min(b + amount, 1), alpha: a)
+        }
+        return self
+    }
+}
+
+// --- Spatial grid for neighbor search ---
+private struct GridCell: Hashable {
+    let x: Int
+    let y: Int
+    let z: Int
+}
+private func gridCell(for position: SCNVector3, cellSize: Float) -> GridCell {
+    return GridCell(
+        x: Int(floor(position.x / cellSize)),
+        y: Int(floor(position.y / cellSize)),
+        z: Int(floor(position.z / cellSize))
+    )
+}
+
+// --- Smoothing and steering parameters ---
+public var velocitySmoothFactor: Float = 0.6 // Higher for gentler velocity blending
+public var maxSteeringForce: Float = 0.18 // Clamp steering force magnitude
+
+private func blendColors(color1: UIColor, color2: UIColor, t: CGFloat) -> UIColor {
+    var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+    var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+    color1.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+    color2.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+    let r = r1 + (r2 - r1) * t
+    let g = g1 + (g2 - g1) * t
+    let b = b1 + (b2 - b1) * t
+    let a = a1 + (a2 - a1) * t
+    return UIColor(red: r, green: g, blue: b, alpha: a)
+}
+
+private func makeBlueGradientImage(size: CGSize) -> UIImage? {
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { ctx in
+        let colors = [UIColor(red: 0.18, green: 0.38, blue: 0.78, alpha: 1.0).cgColor,
+                      UIColor(red: 0.00, green: 0.08, blue: 0.28, alpha: 0.5).cgColor]
+        let locations: [CGFloat] = [0.0, 1.0]
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: locations) {
+            ctx.cgContext.drawLinearGradient(gradient,
+                start: CGPoint(x: size.width/2, y: 0),
+                end: CGPoint(x: size.width/2, y: size.height),
+                options: [])
+        }
+    }
+}

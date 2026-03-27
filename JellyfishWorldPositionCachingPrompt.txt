@@ -1,0 +1,111 @@
+PROMPT: Apply Jellyfish Simulation World-Position Caching & Snapshot Accessors
+
+Goal:
+Refactor the simulation class to (1) eliminate repeated per-tick SceneKit `convertPosition` calls, (2) cache world-space positions once per frame, and (3) provide thread-safe snapshot accessors for downstream MIDI / tracker code (so background work never touches live SceneKit nodes).
+
+Changes to implement:
+
+1. Add cached storage (properties near other private state):
+   - `private var cachedInnerWorldPositions: [SCNVector3] = []`
+   - `private var cachedCentralTipWorldPositions: [SCNVector3?] = []`
+   - `private var cachedFrameIndex: UInt64 = 0`
+   - (Optional) `private var lastCachedFrameIndexServed: UInt64 = 0` if you later want frame-change gating.
+
+2. Add a method to rebuild caches (end of each simulation frame):
+   ```swift
+   private func rebuildWorldPositionCache() {
+       let count = jellyfishList.count
+       if cachedInnerWorldPositions.count != count { cachedInnerWorldPositions = Array(repeating: .zero, count: count) }
+       if cachedCentralTipWorldPositions.count != count { cachedCentralTipWorldPositions = Array(repeating: nil, count: count) }
+       for i in 0..<count {
+           let j = jellyfishList[i]
+           let innerM = j.innerHood.presentation.worldTransform
+           cachedInnerWorldPositions[i] = SCNVector3(innerM.m41, innerM.m42, innerM.m43)
+           let centralIndex = j.tentacleSegments.count / 2
+           if j.tentacleSegments.count > 0,
+              centralIndex < j.tentacleSegments.count,
+              let tipNode = j.tentacleSegments[centralIndex].last?.node {
+               let tipM = tipNode.presentation.worldTransform
+               cachedCentralTipWorldPositions[i] = SCNVector3(tipM.m41, tipM.m42, tipM.m43)
+           } else {
+               cachedCentralTipWorldPositions[i] = nil
+           }
+       }
+       cachedFrameIndex &+= 1
+   }
+   ```
+
+3. Call `rebuildWorldPositionCache()` exactly once at the end of the per-frame `update(deltaTime:)` method (after all transforms are finalized), just before returning.
+
+4. Refactor `jellyWorldPosition(index:nodeType:)`:
+   - First try the cache (fast path) when `cachedFrameIndex > 0`.
+   - Only fall back to `presentation.convertPosition(SCNVector3Zero, to: nil)` if cache not yet built (e.g. first frame after reset).
+   - Support "inner" and "centralTip" only (ignore other strings or return nil).
+
+5. On any structural reset (e.g. `reset()` / `teardownAndDispose()`):
+   - Clear caches: `cachedInnerWorldPositions.removeAll()`, `cachedCentralTipWorldPositions.removeAll()`, set `cachedFrameIndex = 0`.
+
+6. Add public snapshot accessors (MUST assert main thread):
+   ```swift
+   public func snapshotInnerWorldPositions() -> [SCNVector3] {
+       assert(Thread.isMainThread)
+       return cachedInnerWorldPositions
+   }
+
+   public func snapshotCentralTipWorldPositions() -> [SCNVector3?] {
+       assert(Thread.isMainThread)
+       return cachedCentralTipWorldPositions
+   }
+
+   public func snapshotAllWorldPositions() -> (inner: [SCNVector3], central: [SCNVector3?]) {
+       assert(Thread.isMainThread)
+       return (cachedInnerWorldPositions, cachedCentralTipWorldPositions)
+   }
+   ```
+
+7. Thread-safety / usage guidance (document or comment):
+   - Only call snapshot methods on main.
+   - If MIDI/tracker processing runs off main: capture snapshot on main, then pass the returned arrays (value semantics) to the background queue.
+   - Do NOT access SceneKit node properties or `presentation` off main.
+
+8. (Optional future) Expose `public var currentFrameIndex: UInt64 { cachedFrameIndex }` so MIDI loop can skip work if frame index hasn’t advanced (avoids processing multiple ticks per visual frame).
+
+9. Remove (or stop calling) any older code that did repeated per-tick:
+   - `node.presentation.convertPosition(_, to:nil)`
+   - `scnView.projectPoint` inside tight MIDI loops while inactive.
+   Replace those with:
+   - A snapshot + normalization step
+   - Or world-only fallback when renderer inactive
+
+10. Ensure inactive / background mode does NOT call projection:
+   - Use cached world positions + your own normalization (e.g. divide by `visualBounds`, map to 0–127).
+
+11. Performance validation expectations:
+   - Drastic reduction in time spent inside SceneKit transform conversion on profiler.
+   - No blocking / beachball when app loses focus (since no convertPosition in tick path).
+   - Smooth drag interactions (main thread freed).
+
+Quality checks before finishing:
+   - Build succeeds (no missing symbols).
+   - First frame after reset still returns valid data (fallback path).
+   - No crashes on rapid focus in/out.
+   - Cached arrays resize correctly when jellyfish count changes.
+
+Edge cases to test:
+   - Immediately querying positions right after `reset()` (first frame).
+   - Zero jellyfish (if configuration allows).
+   - App inactive: confirm no projection calls.
+   - High tick rate vs low frame rate (ensure snapshots reused without redundant rebuild).
+
+Optional enhancements (mention if desired):
+   - Add frame gating in MIDI: skip if `lastServedFrame == currentFrameIndex`.
+   - Convert `SCNVector3` caches to `SIMD3<Float>` internally for lower overhead.
+   - Add a `withWorldPositionSnapshot { inner, central in ... }` helper to centralize the assert.
+
+Success criteria:
+   - All tracker-based MIDI & sparkline features operate identically visually.
+   - CPU time per tick drops.
+   - No stutter entering background; sparkline freezes without beachball.
+   - Thread-safe if moved off main later.
+
+End of prompt.

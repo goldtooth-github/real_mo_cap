@@ -1,0 +1,148 @@
+import SwiftUI
+import SceneKit
+
+/// A reusable view component for lifeform simulations that handles lifecycle and timer management
+struct SimulationView<SimulationType: LifeformSimulation>: View {
+    // The shared simulation manager
+    @StateObject private var simulationManager: SimulationManager
+    
+    // Configuration for the view
+    var config: LifeformViewConfig
+    
+    // Function to create the simulation
+    var createSimulation: (SCNScene) -> SimulationType
+    
+    // Optional control view builder
+    var controlsBuilder: ((Binding<SimulationType?>) -> AnyView)?
+    
+    // Optional full panel override builder
+    var panelBuilder: ((Binding<SimulationType?>, LifeformViewConfig) -> AnyView)?
+    
+    // Whether this simulation is currently active
+    var isActive: Bool
+    
+    // Camera state
+    @StateObject private var cameraState = CameraOrbitState()
+    
+    // Store simulation reference
+    @State private var simulation: SimulationType?
+    
+    init(
+        config: LifeformViewConfig,
+        createSimulation: @escaping (SCNScene) -> SimulationType,
+        controlsBuilder: ((Binding<SimulationType?>) -> AnyView)? = nil,
+        panelBuilder: ((Binding<SimulationType?>, LifeformViewConfig) -> AnyView)? = nil,
+        isActive: Bool = true
+    ) {
+        self.config = config
+        self.createSimulation = createSimulation
+        self.controlsBuilder = controlsBuilder
+        self.panelBuilder = panelBuilder
+        self.isActive = isActive
+        _simulationManager = StateObject(wrappedValue: SimulationManager(updateInterval: config.updateInterval))
+    }
+    
+    var body: some View {
+        ZStack {
+            // Use the wireframe cube scene with our simulation
+            WireframeCubeSceneView(
+                cameraState: cameraState,
+                sceneSetupHandler: { scene in
+                    // Set initial camera position
+                    cameraState.setInitialPositionInDegrees(
+                        azimuth: Float(config.initialAzimuth),
+                        elevation: Float(config.initialElevation),
+                        radius: Float(config.initialRadius)
+                    )
+                    cameraState.minRadius = Float(config.minRadius)
+                    cameraState.maxRadius = Float(config.maxRadius)
+                    
+                    // Set up lighting
+                    setupLighting(in: scene)
+                    
+                    // Create the simulation
+                    let newSimulation = createSimulation(scene)
+                    simulation = newSimulation
+                    
+                    // Register with simulation manager
+                    simulationManager.setSimulation(newSimulation)
+                }
+            )
+            .edgesIgnoringSafeArea(.all)
+            // Add camera control gestures based on configuration
+            .modifier(CameraControlModifier(
+                cameraState: cameraState,
+                cameraControlMode: config.cameraControlMode
+            ))
+            
+            VStack {
+                Spacer()
+                
+                if let panelBuilder = panelBuilder {
+                    panelBuilder(
+                        Binding(
+                            get: { simulation },
+                            set: { simulation = $0 }
+                        ),
+                        config
+                    )
+                } else {
+                    // Controls panel
+                    VStack(spacing: 12) {
+                        //TITLE
+                        Text(config.title)
+                            .font(.headline)
+                            .foregroundColor(config.controlTextColor)
+                        
+                        //DESCRIPTION
+                        Text(config.description)
+                            .font(.caption)
+                            .foregroundColor(config.controlTextColor.opacity(0.8))
+                        
+                        
+                        // Custom controls if provided
+                        if let controlsBuilder = controlsBuilder {
+                            controlsBuilder(Binding(
+                                get: { simulation },
+                                set: { simulation = $0 }
+                            ))
+                        }
+                        
+                      
+                  
+                    }
+                    .padding()
+                    .background(config.controlPanelColor)
+                    .cornerRadius(10)
+                    .padding(.bottom)
+                }
+            }
+        }
+        .onChange(of: isActive) { newValue in
+            simulationManager.isActive = newValue
+        }
+        .onAppear {
+            simulationManager.isActive = isActive
+        }
+        .onDisappear {
+            simulationManager.isActive = false
+        }
+    }
+    
+    private func setupLighting(in scene: SCNScene) {
+        // Ambient light for overall illumination
+        let ambientLight = SCNNode()
+        ambientLight.light = SCNLight()
+        ambientLight.light?.type = .ambient
+        ambientLight.light?.color = UIColor(white: CGFloat(config.ambientLightIntensity), alpha: 1.0)
+        scene.rootNode.addChildNode(ambientLight)
+        
+        // Directional light for shadows and better definition
+        let directionalLight = SCNNode()
+        directionalLight.light = SCNLight()
+        directionalLight.light?.type = .directional
+        directionalLight.light?.color = UIColor(white: CGFloat(config.directionalLightIntensity), alpha: 1.0)
+        directionalLight.eulerAngles = config.directionalLightAngles
+        scene.rootNode.addChildNode(directionalLight)
+    }
+}

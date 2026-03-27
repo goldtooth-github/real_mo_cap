@@ -1,0 +1,91 @@
+import SwiftUI
+import UIKit
+
+/// Captures two-finger vertical drag (average Y delta) without interfering with single-finger gestures.
+struct TwoFingerVerticalDragCapture: UIViewRepresentable {
+    var onDelta: (CGFloat) -> Void
+    var onEnd: () -> Void
+    var excludedBottom: CGFloat = 0 // height from bottom to ignore (allow panel interaction)
+    
+    func makeCoordinator() -> Coordinator { Coordinator(onDelta: onDelta, onEnd: onEnd) }
+    
+    func makeUIView(context: Context) -> CaptureView {
+        let v = CaptureView()
+        v.isMultipleTouchEnabled = true
+        v.coordinator = context.coordinator
+        v.excludedBottom = excludedBottom
+        v.backgroundColor = .clear
+        return v
+    }
+    
+    func updateUIView(_ uiView: CaptureView, context: Context) {
+        uiView.coordinator = context.coordinator
+        uiView.excludedBottom = excludedBottom
+    }
+    
+    final class CaptureView: UIView {
+        weak var coordinator: Coordinator?
+        private var lastAverageY: CGFloat?
+        var excludedBottom: CGFloat = 0
+        
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            let all = event?.allTouches ?? []
+            // If any touch begins inside excluded bottom region, pass through
+            if shouldExclude(all) { self.next?.touchesBegan(touches, with: event); return }
+            if all.count == 2 {
+                lastAverageY = averageY(of: all)
+            } else {
+                lastAverageY = nil
+                // pass through single touches
+                self.next?.touchesBegan(touches, with: event)
+            }
+        }
+        
+        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+            let all = event?.allTouches ?? []
+            if shouldExclude(all) { self.next?.touchesMoved(touches, with: event); return }
+            guard all.count == 2, let last = lastAverageY else {
+                self.next?.touchesMoved(touches, with: event)
+                return
+            }
+            let avg = averageY(of: all)
+            coordinator?.onDelta(avg - last)
+            lastAverageY = avg
+        }
+        
+        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+            let all = event?.allTouches ?? []
+            if shouldExclude(all) { self.next?.touchesEnded(touches, with: event); return }
+            if all.count <= 2 { coordinator?.onEnd() }
+            lastAverageY = nil
+            self.next?.touchesEnded(touches, with: event)
+        }
+        
+        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+            coordinator?.onEnd()
+            lastAverageY = nil
+            self.next?.touchesCancelled(touches, with: event)
+        }
+        
+        private func shouldExclude(_ touches: Set<UITouch>) -> Bool {
+            guard excludedBottom > 0 else { return false }
+            let h = bounds.height
+            return touches.contains { $0.location(in: self).y > h - excludedBottom }
+        }
+        
+        private func averageY(of touches: Set<UITouch>) -> CGFloat {
+            guard !touches.isEmpty else { return 0 }
+            let sum = touches.reduce(CGFloat(0)) { $0 + $1.location(in: self).y }
+            return sum / CGFloat(touches.count)
+        }
+    }
+    
+    final class Coordinator {
+        let onDelta: (CGFloat) -> Void
+        let onEnd: () -> Void
+        init(onDelta: @escaping (CGFloat) -> Void, onEnd: @escaping () -> Void) {
+            self.onDelta = onDelta
+            self.onEnd = onEnd
+        }
+    }
+}

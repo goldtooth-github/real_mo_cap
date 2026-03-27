@@ -1,0 +1,88 @@
+//
+//  fix.txt
+//  universa
+//
+//  Created by Nick Packer on 23/09/2025.
+//
+
+Memory Creep Fix — Summary and Root-Cause Strategy
+
+What changed (and why it helps)
+- Disabled implicit animations per frame
+  - CATransaction.setDisableActions(true) + SCNTransaction.animationDuration = 0 around all per-frame updates (scene updates, camera updates).
+  - Prevents Core Animation from allocating/transacting every frame.
+- Wrapped per-frame work in autoreleasepool
+  - Ensures temporary SceneKit/CA objects are released promptly each frame.
+- Removed accumulated scene lights and cleaned teardown
+  - Track ambient/directional lights and remove them on reset/deinit.
+  - In dismantleUIView, nil out scene/pointOfView/delegate and remove constraints/targets.
+  - Prevents long-lived scene/view resources from lingering between view lifecycles.
+- Only-update-when-changed thresholds
+  - Skip node.position/rotation/scale writes unless values change beyond tiny epsilons.
+  - Cuts property churn and reduces backing allocations.
+- Geometry update pattern change for splines
+  - Switched from mutating SCNCylinder.height per frame to a unit-height cylinder scaled via node.scale.y.
+  - Keeps geometry static and avoids per-frame retessellation/allocations.
+- SIMD-backed properties
+  - Use node.simdPosition/node.simdScale to reduce bridging overhead.
+- Camera look-at optimization
+  - Replaced per-frame cameraNode.look(at:) with a single SCNLookAtConstraint and a reusable target node updated only when needed.
+  - Avoids per-frame matrix/transaction churn.
+
+Why memory stopped growing
+- Eliminated per-frame CA transactions and geometry mutations that allocate.
+- Avoided accumulating SceneKit nodes across resets/deinit.
+- Reduced redundant property writes and implicit animations.
+- Ensured short-lived objects get released promptly via autorelease pools.
+
+Most likely root-cause (probable culprits)
+- Per-frame SCNCylinder.height mutations (retessellation) and implicit animations causing steady allocations.
+- Repeated camera look(at:) calls every frame creating transient allocations.
+- Secondary contributors: redundant property writes and lights accumulating across resets.
+
+Strategy to pinpoint the exact issue (after the fact or next time)
+1) Binary search (git bisect) over the change set
+   - Establish a reproducible baseline (same scene, same duration) and bisect until the leak returns.
+2) Feature flags to toggle fixes at runtime
+   - Add toggles for: implicit animation off, unit-height scaling, only-update-when-changed, look-at constraint, autorelease pools.
+   - Flip one at a time to isolate the effect on memory slope.
+3) Instruments Allocations + VM Tracker
+   - Watch SCNNode, SCNGeometry (SCNCylinder), SCNMaterial, CA::Transaction, and CAShapeLayer counts over time.
+   - Compare runs with and without unit-height scaling and implicit-animation disabling.
+4) Per-frame churn counters
+   - Log counts of property updates actually applied (positions, rotations, scales). Expect sharp drop with only-update-when-changed.
+5) Stress harness
+   - Headless or offscreen run for N minutes; sample memory every 10s; compare slopes between toggles.
+6) Camera isolation
+   - Run with the look-at constraint vs per-frame look(at:) to see differential allocations.
+
+Minimal checklist to reproduce and confirm root cause
+- Create an A/B toggle for “scale splines vs height-change”.
+- Run Instruments Allocations for 2–5 minutes per branch; record retained allocations and object counts.
+- The branch with height-change + animations should show steady growth; the scaling + disabled animations should be flat.
+
+Conclusion
+- The combination of disabling implicit animations, using unit-height + scale instead of height mutation, only updating when values change, and cleaning up view/scene resources eliminates the slow memory creep. The most likely single root cause was the per-frame geometry mutation amplified by implicit animations; the camera look(at:) pattern likely added to the slope.
+
+
+
+
+
+            sceneOverlayBuilder: {
+                AnyView(
+                    Group {
+                        if displayLFOOutputs, !midiSlots.isEmpty {
+                            let labels = midiSlots.map { coordForTracker($0.tracked) }
+                            let dynamicMap = makeBarleyTrackerColors(barleySimulationRef)
+                            let colors = midiSlots.map { dynamicMap[$0.tracked] ?? colorForTrackerHash($0.tracked) }
+                            LFOOverlayView(
+                                labels: labels,
+                                histories: lfoHistories,
+                                colors: colors,
+                                onDoubleTap: { idx in
+                                    if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                                }
+                            )
+                            .padding(.top, 8)
+                            .padding(.horizontal, 8)
+                        }

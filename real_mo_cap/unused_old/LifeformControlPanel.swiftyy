@@ -1,0 +1,45 @@
+import SwiftUI
+
+struct LifeformControlPanel<Content: View>: View {
+    let title: String?
+    let description: String?
+    let content: Content
+    let backgroundColor: Color
+    let textColor: Color
+    let buttonColor: Color
+
+    init(title: String? = nil,
+         description: String? = nil,
+         backgroundColor: Color = Color.black.opacity(0.6),
+         textColor: Color = .white,
+         buttonColor: Color = Color.blue.opacity(0.6),
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.description = description
+        self.backgroundColor = backgroundColor
+        self.textColor = textColor
+        self.buttonColor = buttonColor
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 40) // Add deadspace at the top
+            if let title = title {
+                Text(title)
+                    .font(.headline)
+                    .foregroundColor(textColor)
+            }
+            if let description = description {
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundColor(textColor.opacity(0.7))
+            }
+            content
+        }
+        .padding()
+        .background(backgroundColor)
+        .cornerRadius(16)
+        .shadow(radius: 8)
+    }
+}

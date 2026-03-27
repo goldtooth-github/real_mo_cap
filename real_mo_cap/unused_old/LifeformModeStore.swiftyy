@@ -1,0 +1,12 @@
+// filepath: /Users/nick/Desktop/lifeform/dumbmachine/universa/universa/LifeformModeStore.swift
+import SwiftUI
+
+enum LifeformMode: String, CaseIterable, Identifiable {
+    case classic
+    case multiInstance
+    var id: String { rawValue }
+}
+
+final class LifeformModeStore: ObservableObject {
+    @Published var mode: LifeformMode = .classic // default: classic on all platforms
+}

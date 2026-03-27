@@ -1,0 +1,13 @@
+// Item.swift
+// Basic model for SwiftData
+import Foundation
+import SwiftData
+
+@Model
+final class Item {
+    var timestamp: Date
+    
+    init(timestamp: Date = .now) {
+        self.timestamp = timestamp
+    }
+}

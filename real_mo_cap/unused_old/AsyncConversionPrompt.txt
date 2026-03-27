@@ -1,0 +1,33 @@
+Convert any lifeform simulation and view to an async architecture, following the pattern in JellyfishSimulationAsync.swift and JellyfishLifeformViewAsync.swift:
+
+Simulation class:
+- Implement LifeformSimulation directly; do not inherit from the removed sync class.
+- Include all public API used by the view: setPulseSpeed, setRotation, setJellySize, translate, reset, update(deltaTime:), tracker helpers, visualBounds, and weak scnView.
+- Create geometry and add a rootNode to scene.rootNode in init(scene:scnView:). Don’t leave stubs; ensure nodes exist and are visible.
+- Port any required helpers/types locally or to a shared file (e.g., TentacleSegment, Config structs, mesh builders like bellMesh, SCNVector3 math).
+- Keep SceneKit mutations on the main actor; run the loop with a Task that awaits Task.sleep between frames. Provide startAsyncSimulation/stopAsyncSimulation and honor cancellation.
+- Avoid capturing out-of-scope members in helpers; pass needed params explicitly (e.g., frillAmplitude, frillFrequency). Mind Float vs CGFloat conversions.
+
+View wrapper:
+- Switch to ModifiedSimulationView<YourSimulationAsync>; if inference fails, add explicit closure parameter types.
+- Create the simulation in createSimulation, assign scnView in onViewReady, and call startAsyncSimulation/stopAsyncSimulation on appear/disappear (or isActive transitions).
+- Forward controls to the async API; clamp ranges and keep Float/CGFloat consistent.
+- Ensure SCNViewContainer is used for cross‑platform rendering; keep UIKit usage guarded by canImport(UIKit).
+
+Cross‑platform and integration:
+- Keep camera/lighting setup consistent with other sims; ensure the camera can see the content and rootNode is added to the scene.
+- Update all references and helpers to the Async type (e.g., tracker resolvers, MIDI menus).
+- Don’t reference removed types (e.g., JellyfishSimulation); rename all to YourSimulationAsync.
+
+Testing checklist:
+- Build typechecks: protocol conformance, closure inference, Float↔CGFloat conversions, missing symbols.
+- Visual: geometry visible, camera framing, lighting sufficient.
+- Runtime: loop starts/stops correctly, no SceneKit off‑main mutations, Task cancels on view disappear, no leaks.
+- Functional: controls update the sim, drag/pinch work, MIDI/tracker values resolve.
+
+Common pitfalls to avoid:
+- Forgetting to add rootNode to scene.rootNode.
+- Leaving geometry/update as stubs; nothing renders.
+- Missing helper types/functions after removing the old class.
+- Using removed type names in views or trackers.
+- Unannotated closures causing inference errors in generic wrappers.

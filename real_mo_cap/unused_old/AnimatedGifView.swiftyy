@@ -1,0 +1,40 @@
+import SwiftUI
+import UIKit
+import ImageIO
+
+struct AnimatedGifView: UIViewRepresentable {
+    let gifName: String
+
+    func makeUIView(context: Context) -> UIImageView {
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFit
+        imageView.clipsToBounds = true
+        if let dataAsset = NSDataAsset(name: gifName) {
+            imageView.image = UIImage.animatedImageWithGIFData(dataAsset.data)
+        }
+        return imageView
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {}
+}
+
+extension UIImage {
+    static func animatedImageWithGIFData(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let count = CGImageSourceGetCount(source)
+        var images: [UIImage] = []
+        var duration: Double = 0
+        for i in 0..<count {
+            if let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) {
+                images.append(UIImage(cgImage: cgImage))
+                let properties = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [String: Any]
+                let gifDict = properties?[kCGImagePropertyGIFDictionary as String] as? [String: Any]
+                let frameDuration = (gifDict?[kCGImagePropertyGIFUnclampedDelayTime as String] as? Double) ??
+                    (gifDict?[kCGImagePropertyGIFDelayTime as String] as? Double) ?? 0.1
+                duration += frameDuration
+            }
+        }
+        if duration <= 0 { duration = Double(count) * 0.1 }
+        return UIImage.animatedImage(with: images, duration: duration)
+    }
+}

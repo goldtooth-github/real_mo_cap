@@ -1,0 +1,294 @@
+// Swift
+// File: 'universa/ModifiedSimulationView.swift'
+import SwiftUI
+import SceneKit
+import UIKit
+
+/// A reusable simulation container that exposes camera state, optional SCNView callback,
+/// and wires UI controls. Async simulations manage their own loops.
+struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
+    // MARK: Inputs
+    var config: LifeformViewConfig
+    @ObservedObject var customCameraState: CameraOrbitState
+    var createSimulation: (SCNScene) -> SimulationType
+    var controlsBuilder: ((Binding<SimulationType?>) -> AnyView)?
+    var panelBuilder: ((Binding<SimulationType?>, LifeformViewConfig) -> AnyView)? = nil
+    var onViewReady: ((Binding<SimulationType?>, SCNView) -> Void)? = nil
+    var isActive: Bool = true
+    // Optional system scale gesture hooks (used in nicks_control to scale simulation via pinch)
+    var systemScaleGetter: (() -> Float)? = nil
+    var systemScaleSetter: ((Float) -> Void)? = nil
+    var systemScaleRange: ClosedRange<Float> = 0.5...3.0
+    // Simulation drag handler forwarded to CameraControlModifier (nicks_control)
+    var simulationDragHandler: ((CGSize) -> Void)? = nil
+    // Parallax enable flag
+    var enableParallaxPan: Bool = true
+    var onSimulationUpdated: ((SimulationType?) -> Void)? = nil
+    // Retained for call-site compatibility; unused now that SimulationManager is removed
+    var driveWithSimulationManager: Bool = false
+    // Custom pause handler for async sims; receives new paused state and current sim
+    var pauseHandler: ((Bool, SimulationType?) -> Void)? = nil
+    // Optional overlay placed over the scene area (not over the controls)
+    var sceneOverlayBuilder: (() -> AnyView)? = nil
+
+    // MARK: State
+    @State private var simulation: SimulationType?
+    private enum PanelState { case expanded, hidden }
+    @State private var panelState: PanelState = .expanded
+    @State private var autoHideWorkItem: DispatchWorkItem?
+    private let swipeRevealZoneHeight: CGFloat = 100
+    @State private var isPaused: Bool = false
+    @AppStorage("keepScreenAwake") private var keepScreenAwake: Bool = false
+
+    // Extracted helper views to reduce compiler complexity
+    @ViewBuilder private func panelContent() -> some View {
+        if panelState == .expanded { expandedPanel() }
+        else { EmptyView() }
+    }
+
+    @ViewBuilder private func expandedPanel() -> some View {
+        Group {
+            if let panelBuilder = panelBuilder {
+                panelBuilder(Binding(get: { simulation }, set: { simulation = $0 }), config)
+            } else {
+                VStack(spacing: 12) {
+                    // Header: Pause (left), Title (center), Icon button (right)
+                    HStack(alignment: .top) {
+                        // Pause/play
+                        Button(action: {
+                            isPaused.toggle()
+                            if let handler = pauseHandler {
+                                handler(isPaused, simulation)
+                            } else {
+                                if isPaused { stopAsyncIfKnown(simulation) }
+                                else { startAsyncIfKnown(simulation) }
+                            }
+                        }) {
+                            Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                                .foregroundColor(config.controlTextColor)
+                                .frame(width: 32, height: 32)
+                        }
+                        .frame(width: 40, alignment: .center)
+                        // Title
+                        Text(config.title)
+                            .font(.headline)
+                            .foregroundColor(config.controlTextColor)
+                            .frame(maxWidth: .infinity)
+                            .multilineTextAlignment(.center)
+                        // Keep-awake toggle
+                        Button(action: {
+                            keepScreenAwake.toggle()
+                            UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+                        }) {
+                            Image(systemName: keepScreenAwake ? "lock.display" : "lock.open.display")
+                                .font(.title2)
+                                .foregroundColor(keepScreenAwake ? .orange : config.controlTextColor)
+                        }
+                        .frame(width: 40, alignment: .center)
+                        .accessibilityLabel("Keep Screen Awake")
+                        .accessibilityHint("Toggles screen lock prevention")
+                    }
+                    // Description and controls
+                    Text(config.description)
+                        .font(.caption)
+                        .foregroundColor(config.controlTextColor.opacity(0.8))
+                    if let controlsBuilder = controlsBuilder {
+                        controlsBuilder(Binding(get: { simulation }, set: { simulation = $0 }))
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(config.controlPanelColor)
+        .cornerRadius(10)
+    }
+
+    // MARK: Init
+    init(
+        config: LifeformViewConfig,
+        customCameraState: CameraOrbitState,
+        createSimulation: @escaping (SCNScene) -> SimulationType,
+        controlsBuilder: ((Binding<SimulationType?>) -> AnyView)? = nil,
+        panelBuilder: ((Binding<SimulationType?>, LifeformViewConfig) -> AnyView)? = nil,
+        onViewReady: ((Binding<SimulationType?>, SCNView) -> Void)? = nil,
+        isActive: Bool = true,
+        systemScaleGetter: (() -> Float)? = nil,
+        systemScaleSetter: ((Float) -> Void)? = nil,
+        systemScaleRange: ClosedRange<Float> = 0.5...3.0,
+        simulationDragHandler: ((CGSize) -> Void)? = nil,
+        enableParallaxPan: Bool = true,
+        onSimulationUpdated: ((SimulationType?) -> Void)? = nil,
+        driveWithSimulationManager: Bool = false,
+        pauseHandler: ((Bool, SimulationType?) -> Void)? = nil,
+        sceneOverlayBuilder: (() -> AnyView)? = nil
+    ) {
+        self.config = config
+        self.createSimulation = createSimulation
+        self.controlsBuilder = controlsBuilder
+        self.panelBuilder = panelBuilder
+        self.onViewReady = onViewReady
+        self.isActive = isActive
+        self.systemScaleGetter = systemScaleGetter
+        self.systemScaleSetter = systemScaleSetter
+        self.systemScaleRange = systemScaleRange
+        self.simulationDragHandler = simulationDragHandler
+        self.enableParallaxPan = enableParallaxPan
+        self.onSimulationUpdated = onSimulationUpdated
+        self.driveWithSimulationManager = driveWithSimulationManager
+        self.pauseHandler = pauseHandler
+        self.sceneOverlayBuilder = sceneOverlayBuilder
+        _customCameraState = ObservedObject(initialValue: customCameraState)
+    }
+
+    // MARK: Body
+    var body: some View {
+        Group {
+            ZStack {
+                sceneStack()
+                    .edgesIgnoringSafeArea(.all)
+                VStack(spacing: 0) {
+                    Spacer()
+                    panelContent()
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(TapGesture().onEnded { showPanelAndScheduleAutoHide() })
+                        .padding(.bottom, panelState == .expanded ? config.controlPanelBottomInset : 0)
+                        .animation(.easeInOut(duration: 0.3), value: panelState)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    if panelState == .hidden {
+                        Color.clear
+                            .frame(height: swipeRevealZoneHeight)
+                            .contentShape(Rectangle())
+                            .onTapGesture { showPanelAndScheduleAutoHide() }
+                    }
+                }
+            }
+            .simultaneousGesture(TapGesture().onEnded {
+                if panelState == .expanded { panelState = .hidden } else { showPanelAndScheduleAutoHide() }
+            })
+        }
+        .preference(key: ControlPanelVisibilityPreferenceKey.self, value: panelState == .expanded)
+        .preference(key: ControlPanelBottomInsetPreferenceKey.self, value: panelState == .expanded ? config.controlPanelBottomInset : 0)
+        .onChange(of: isActive) { _, newValue in
+            if newValue && !isPaused { startAsyncIfKnown(simulation) }
+            else { stopAsyncIfKnown(simulation) }
+        }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+            if isActive && !isPaused { startAsyncIfKnown(simulation) }
+            scheduleAutoHide()
+        }
+        .onDisappear {
+            stopAsyncIfKnown(simulation)
+            cancelAutoHide()
+        }
+    }
+
+    // Scene + camera controls stack
+    @ViewBuilder private func sceneStack() -> some View {
+        ZStack(alignment: .top) {
+            WireframeCubeSceneView(
+                cameraState: customCameraState,
+                sceneSetupHandler: { scene in
+                    customCameraState.setInitialPositionInDegrees(
+                        azimuth: Float(config.initialAzimuth),
+                        elevation: Float(config.initialElevation),
+                        radius: Float(config.initialRadius)
+                    )
+                    customCameraState.minRadius = Float(config.minRadius)
+                    customCameraState.maxRadius = Float(config.maxRadius)
+                    setupLighting(in: scene)
+                    let newSimulation = createSimulation(scene)
+                    simulation = newSimulation
+                    onSimulationUpdated?(newSimulation)
+                    startAsyncIfKnown(newSimulation)
+                },
+                onSCNViewReady: { scnView in
+                    if let cb = onViewReady { cb(Binding(get: { simulation }, set: { simulation = $0 }), scnView) }
+                    // Ensure async sims start after view is ready if active
+                    if isActive && !isPaused { startAsyncIfKnown(simulation) }
+                }
+            )
+            .modifier(CameraControlModifier(
+                cameraState: customCameraState,
+                cameraControlMode: config.cameraControlMode,
+                systemScaleGetter: systemScaleGetter,
+                systemScaleSetter: systemScaleSetter,
+                systemScaleRange: systemScaleRange,
+                simulationDragHandler: simulationDragHandler,
+                enableParallaxPan: enableParallaxPan
+            ))
+            if let overlay = sceneOverlayBuilder?() { overlay }
+        }
+    }
+
+    // MARK: Helpers
+    private func setupLighting(in scene: SCNScene) {
+        if config.title == "Jellyfish" {
+            let directional = SCNNode()
+            directional.light = SCNLight()
+            directional.light?.type = .directional
+            directional.light?.color = UIColor.white
+            directional.light?.intensity = 1200
+            directional.eulerAngles = SCNVector3(-Float.pi/3, Float.pi/4, 0)
+            scene.rootNode.addChildNode(directional)
+            return
+        }
+        if config.title != "Planetary System" {
+            let ambient = SCNNode()
+            ambient.light = SCNLight()
+            ambient.light?.type = .ambient
+            ambient.light?.color = UIColor(white: CGFloat(config.ambientLightIntensity), alpha: 1.0)
+            scene.rootNode.addChildNode(ambient)
+            let directional = SCNNode()
+            directional.light = SCNLight()
+            directional.light?.type = .directional
+            directional.light?.color = UIColor(white: CGFloat(config.directionalLightIntensity), alpha: 1.0)
+            directional.eulerAngles = config.directionalLightAngles
+            scene.rootNode.addChildNode(directional)
+        }
+    }
+    private func scheduleAutoHide() {
+        cancelAutoHide()
+        let work = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.35)) { panelState = .hidden }
+        }
+        autoHideWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+    private func cancelAutoHide() {
+        autoHideWorkItem?.cancel()
+        autoHideWorkItem = nil
+    }
+    private func showPanelAndScheduleAutoHide() {
+        withAnimation(.easeInOut(duration: 0.25)) { panelState = .expanded }
+        scheduleAutoHide()
+    }
+}
+
+// Helper: auto start/stop known async simulations without needing view-level callbacks
+private func startAsyncIfKnown(_ sim: LifeformSimulation?) {
+    guard let sim = sim else { return }
+    switch sim {
+    case let s as JellyfishSimulationAsync: s.startAsyncSimulation()
+    case let s as MeshBirdSimulationAsync: s.startAsyncSimulation()
+    case let s as BoidsSimulationAsync: s.startAsyncSimulation()
+    case let s as PlanetsSimulationAsync: s.startAsyncSimulation()
+    case let s as FlowerClusterSimulationAsync: s.startAsyncSimulation()
+    case let s as WaveAndLeavesSimulationAsync: s.startAsyncSimulation()
+    case let s as SimplePlantLadybirdsSimulationAsync: s.startAsyncSimulation()
+    default: break
+    }
+}
+private func stopAsyncIfKnown(_ sim: LifeformSimulation?) {
+    guard let sim = sim else { return }
+    switch sim {
+    case let s as JellyfishSimulationAsync: s.stopAsyncSimulation()
+    case let s as MeshBirdSimulationAsync: s.stopAsyncSimulation()
+    case let s as BoidsSimulationAsync: s.stopAsyncSimulation()
+    case let s as PlanetsSimulationAsync: s.stopAsyncSimulation()
+    case let s as FlowerClusterSimulationAsync: s.stopAsyncSimulation()
+    case let s as WaveAndLeavesSimulationAsync: s.stopAsyncSimulation()
+    case let s as SimplePlantLadybirdsSimulationAsync: s.stopAsyncSimulation()
+    default: break
+    }
+}

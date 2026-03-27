@@ -1,0 +1,77 @@
+// AntColonyLifeformView.swift
+// SwiftUI view for displaying the AntColonySimulation in a cube
+import SwiftUI
+import SceneKit
+
+struct AntColonyLifeformView: View {
+    // Control ant parameters
+    @State private var antCount: Int = 25
+    
+    // Define the configuration for this specific lifeform
+    private let config = LifeformViewConfig(
+        // Camera parameters
+        initialAzimuth: 0,      // Directly in front
+        initialElevation: 90,   // Top-down view
+        initialRadius: 15,      // Further away to see the whole colony
+        minRadius: 8,
+        maxRadius: 30,
+        
+        // Camera control options
+        cameraControlMode: .orbitOnly,
+        
+        // Lighting parameters
+        ambientLightIntensity: 0.5,
+        directionalLightIntensity: 0.8,
+        
+        // Simulation parameters
+        updateInterval: 0.016,
+        
+        // UI parameters
+        title: "2D Ant Colony Simulation",
+        description: "Ants search for food and leave pheromone trails",
+        controlPanelColor: Color.black.opacity(0.6),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.blue.opacity(0.6)
+    )
+    
+    // Custom ant count controls
+    private func antControls(simulation: Binding<AntColonySimulation?>) -> AnyView {
+        return AnyView(
+            HStack {
+                Text("Ants: \(antCount)")
+                    .foregroundColor(.white)
+                    .frame(width: 60, alignment: .leading)
+                
+                Slider(value: Binding(
+                    get: { Double(antCount) },
+                    set: { newValue in
+                        let newCount = Int(newValue)
+                        if newCount != antCount {
+                            antCount = newCount
+                            // Reset simulation with new ant count
+                            simulation.wrappedValue = nil
+                        }
+                    }
+                ), in: 5...50, step: 1)
+                .padding(.horizontal)
+            }
+        )
+    }
+    
+    var body: some View {
+        // Use our generic lifeform view with the AntColonySimulation type
+        GenericLifeformView<AntColonySimulation>(
+            config: config,
+            createSimulation: { scene in
+                return AntColonySimulation(antCount: antCount, scene: scene)
+            },
+            controlsBuilder: { simulationBinding in
+                antControls(simulation: simulationBinding)
+            }
+        )
+    }
+}
+
+#Preview {
+    AntColonyLifeformView()
+}

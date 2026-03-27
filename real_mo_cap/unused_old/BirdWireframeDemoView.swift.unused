@@ -1,0 +1,87 @@
+import SwiftUI
+import SceneKit
+import UIKit
+
+struct BirdWireframeDemoView: View {
+    var isActive: Bool = false
+    @State private var wingFlapSpeed: Float = 1.0
+    @State private var birdSize: Float = 5.0
+    @State private var simulation: MeshBirdSimulation?
+    @StateObject private var cameraState = CameraOrbitState()
+
+    private let config = LifeformViewConfig(
+        initialAzimuth: 45,
+        initialElevation: 20,
+        initialRadius: 12,
+        minRadius: 3,
+        maxRadius: 12,
+        cameraControlMode: .fullControl,
+        ambientLightIntensity: 0.6,
+        directionalLightIntensity: 0.8,
+        directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0),
+        updateInterval: 0.016,
+        title: "Wireframe Bird Demo",
+        description: "",
+        controlPanelColor: Color.black.opacity(0.6),
+        controlTextColor: .white,
+        buttonBackgroundColor: Color.blue.opacity(0.6)
+    )
+
+    var body: some View {
+        ModifiedSimulationView<MeshBirdSimulation>(
+            config: config,
+            customCameraState: cameraState,
+            createSimulation: { scene in
+                // Wireframe cube background
+                let visualBounds: Float = Float(CameraOrbitState.maxCoord) * CameraOrbitState.sceneScale
+                let cube = SCNBox(width: CGFloat(visualBounds), height: CGFloat(visualBounds), length: CGFloat(visualBounds), chamferRadius: 0)
+                cube.firstMaterial?.fillMode = .lines
+                cube.firstMaterial?.diffuse.contents = UIColor.white
+                let cubeNode = SCNNode(geometry: cube)
+                cubeNode.position = SCNVector3(visualBounds/2, visualBounds/4, visualBounds/2)
+                scene.rootNode.addChildNode(cubeNode)
+
+                let sim = MeshBirdSimulation(scene: scene, scnView: nil)
+                sim.setWingFlapSpeed(wingFlapSpeed)
+                sim.setBirdSize(birdSize)
+                simulation = sim
+                return sim
+            },
+            controlsBuilder: { simBinding in
+                AnyView(
+                    VStack(spacing: 12) {
+                        Text("Wing Speed").foregroundColor(config.controlTextColor)
+                        Slider(value: $wingFlapSpeed, in: 0.1...6.0)
+                            .onChange(of: wingFlapSpeed) { newVal in
+                                simBinding.wrappedValue?.setWingFlapSpeed(newVal)
+                            }
+                        Text("Bird Size").foregroundColor(config.controlTextColor)
+                        Slider(value: $birdSize, in: 3.0...20.0)
+                            .onChange(of: birdSize) { newVal in
+                                simBinding.wrappedValue?.setBirdSize(newVal)
+                            }
+                        Button("Reset") {
+                            simBinding.wrappedValue?.reset()
+                            wingFlapSpeed = 1.0
+                            birdSize = 5.0
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(config.buttonBackgroundColor)
+                        .foregroundColor(config.controlTextColor)
+                        .cornerRadius(8)
+                    }
+                )
+            },
+            onViewReady: { simBinding, scnView in
+                simBinding.wrappedValue?.scnView = scnView
+            },
+            isActive: isActive
+        )
+        .preferredColorScheme(.dark)
+    }
+}
+
+#Preview {
+    BirdWireframeDemoView()
+}

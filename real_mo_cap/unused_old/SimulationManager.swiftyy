@@ -1,0 +1,128 @@
+import SwiftUI
+import Combine
+import QuartzCore
+
+/// A reusable manager class for handling simulation timing and lifecycle
+class SimulationManager: ObservableObject {
+    // The active state of the simulation
+    @Published var isActive: Bool = false {
+        didSet {
+            if isActive && !oldValue {
+                startSimulation()
+            } else if !isActive && oldValue {
+                pauseSimulation()
+            }
+        }
+    }
+    // New: monotonically increasing tick counter (frame number)
+    @Published var tickCounter: UInt64 = 0
+    
+    // The simulation being managed
+    private var simulation: LifeformSimulation?
+    // Public read-only access to the simulation
+    public var simulationInstance: LifeformSimulation? { simulation }
+    
+    // Timer for simulation updates (fallback when CADisplayLink is unavailable)
+    private var simulationTimer: Timer?
+    //public var timer: Timer? { simulationTimer }
+    // Preferred driver for smooth frame pacing
+    private var displayLink: CADisplayLink?
+    private var lastTimestamp: CFTimeInterval = 0
+    
+    // Update interval in seconds
+    private var updateInterval: TimeInterval = 0.016 // ~60fps
+    
+    init(updateInterval: TimeInterval = 0.016) {
+        self.updateInterval = updateInterval
+    }
+    
+    // Set the simulation to be managed
+    func setSimulation(_ simulation: LifeformSimulation) {
+        pauseSimulation()
+        self.simulation = simulation
+        if isActive {
+            startSimulation()
+        }
+    }
+    
+    // Clear the simulation instance
+    func clearSimulation() {
+        pauseSimulation()
+        self.simulation = nil
+        self.onSimulationUpdated?(nil)
+    }
+    
+    // Callback after each simulation update
+    var onSimulationUpdated: ((LifeformSimulation?) -> Void)?
+    
+    // Start the simulation driver
+    func startSimulation() {
+        guard simulation != nil else { return }
+        // If already running, do nothing
+        if displayLink != nil || simulationTimer != nil { return }
+        
+        // Prefer CADisplayLink for smoothness and to stay active during UI tracking
+        let link = CADisplayLink(target: self, selector: #selector(stepDisplayLink(_:)))
+        if #available(iOS 15.0, *) {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 60)
+        } else {
+            link.preferredFramesPerSecond = 60
+        }
+        lastTimestamp = 0
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        
+        // Fallback safety: if for any reason link didn't attach, start a timer
+        if displayLink == nil {
+            startTimer()
+        }
+    }
+    
+    // Fallback timer path
+    private func startTimer() {
+        guard simulationTimer == nil else { return }
+        let timer = Timer(timeInterval: updateInterval, repeats: true) { [weak self] _ in
+            guard let self = self, let sim = self.simulation else { return }
+            sim.update(deltaTime: Float(self.updateInterval))
+            self.tickCounter &+= 1
+            self.onSimulationUpdated?(self.simulation)
+        }
+        simulationTimer = timer
+        // IMPORTANT: .common so it fires during UI tracking (sliders, scroll, etc.)
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    
+    // Pause the simulation driver
+    func pauseSimulation() {
+        displayLink?.invalidate()
+        displayLink = nil
+        simulationTimer?.invalidate()
+        simulationTimer = nil
+        lastTimestamp = 0
+    }
+    
+    // Reset the simulation
+    func resetSimulation() {
+        simulation?.reset()
+    }
+    
+    @objc private func stepDisplayLink(_ link: CADisplayLink) {
+        guard let sim = simulation else { return }
+        let dt: CFTimeInterval
+        if lastTimestamp == 0 {
+            // First tick after (re)start: use configured interval to avoid a giant dt
+            dt = updateInterval
+        } else {
+            dt = max(0, link.timestamp - lastTimestamp)
+        }
+        lastTimestamp = link.timestamp
+        sim.update(deltaTime: Float(dt))
+        tickCounter &+= 1
+        onSimulationUpdated?(simulation)
+    }
+    
+    // Cleanup when the object is deallocated
+    deinit {
+        pauseSimulation()
+    }
+}

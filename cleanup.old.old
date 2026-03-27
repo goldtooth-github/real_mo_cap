@@ -1,0 +1,145 @@
+//
+//  cleanup.swift
+//  universa
+//
+//  Created by Nick Packer on 21/09/2025.
+//
+
+// swift
+import Combine
+
+struct JellyfishLifeformViewAsync: View {
+    var isActive: Bool = false
+    // ...
+    //CHANGE
+    @State private var midiClockPublisher = Timer.publish(every: 0.04, on: .main, in: .common)
+    @State private var midiClockConnection: Cancellable?
+    //CHANGE
+    
+    
+    var body: some View {
+        ModifiedSimulationView<JellyfishSimulationAsync>(
+            config: config,
+            customCameraState: cameraState,
+            createSimulation: createJellyfishSimulation,
+            controlsBuilder: buildControls,
+            onViewReady: { simBinding, scnView in
+                simBinding.wrappedValue?.scnView = scnView
+                scnViewRef = scnView
+                if inWorkbench {
+                    scnView.backgroundColor = .clear
+                    scnView.isOpaque = false
+                    simBinding.wrappedValue?.sceneReference?.background.contents = UIColor.clear
+                } else {
+                    scnView.backgroundColor = .black
+                    scnView.isOpaque = true
+                    simBinding.wrappedValue?.sceneReference?.background.contents = UIColor.black
+                }
+                //CHANGE
+               if isActive { simBinding.wrappedValue?.startAsyncSimulation() }
+             
+            },
+           
+            isActive: isActive, // honor page activity
+            //CHANGE
+            
+            
+            
+            systemScaleGetter: { jellySize },
+            systemScaleSetter: { newScale in
+                let clamped = min(max(newScale, minJellySize), maxJellySize)
+                jellySize = clamped
+                simRef?.setJellySize(clamped)
+            },
+            systemScaleRange: sizeRange,
+            simulationDragHandler: { delta in
+                let factor: Float = 0.02
+                let movementMultiplier: Float = 2.0
+                let right = cameraState.panDirectionVectors().right
+                let horiz = Float(-delta.width) * factor * movementMultiplier
+                simRef?.translate(dx: right.x * horiz, dy: 0, dz: right.z * horiz)
+                let vert = Float(-delta.height) * factor * movementMultiplier
+                simRef?.translate(dx: 0, dy: vert, dz: 0)
+            },
+            enableParallaxPan: false,
+            driveWithSimulationManager: false,
+            pauseHandler: { paused, sim in
+                if paused { sim?.stopAsyncSimulation() } else { sim?.startAsyncSimulation() }
+            },
+            sceneOverlayBuilder: {
+                AnyView(
+                    Group {
+                        if displayLFOOutputs, !midiSlots.isEmpty {
+                            let labels = midiSlots.map { coordForTracker($0.tracked) }
+                            let colors = midiSlots.map { colorForTrackerHash($0.tracked) }
+                            LFOOverlayView(labels: labels, histories: lfoHistories, colors: colors, onDoubleTap: { idx in
+                                if midiSlots.indices.contains(idx) { midiFocusIndex = idx; showMidiMenu = true }
+                            })
+                            .padding(.top, 8)
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                )
+            }
+        )
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showMidiMenu) { /* unchanged */ }
+        .onChange(of: midiSlots) { _, _ in
+            midiSendCache.lastSentCCValues = midiSendCache.lastSentCCValues.filter { $0.key < midiSlots.count }
+            saveMIDISlots(); syncLFOHistoriesToSlots()
+        }
+        .onReceive(midiClockPublisher) { _ in
+            guard isActive, let sim = simRef else { return }
+            if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+            if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
+            for (index, slot) in midiSlots.enumerated() {
+                guard let rawCC = resolveJellyfishTrackerRawCC(slot.tracked, in: sim) else { continue }
+                let mapped = scaleToRange(rawCC, range: slot.range)
+                if midiSendCache.lastSentCCValues[index] != mapped {
+                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: mapped)
+                    midiSendCache.lastSentCCValues[index] = mapped
+                }
+                if displayLFOOutputs {
+                    let norm = CGFloat(rawCC) / 127.0
+                    if lfoHistories.indices.contains(index) {
+                        var h = lfoHistories[index]
+                        h.append(max(0, min(1, norm)))
+                        if h.count > lfoMaxSamples { h.removeFirst(h.count - lfoMaxSamples) }
+                        lfoHistories[index] = h
+                    }
+                }
+            }
+        }
+        
+        //CHANGE
+        .onChange(of: isActive) { _, active in
+            // Start/stop MIDI clock
+            if active {
+                if midiClockConnection == nil { midiClockConnection = midiClockPublisher.connect() }
+            } else {
+                midiClockConnection?.cancel()
+                midiClockConnection = nil
+            }
+            // Pause/resume SceneKit and simulation
+            scnViewRef?.isPlaying = active
+            scnViewRef?.scene?.isPaused = !active
+            if active { simRef?.startAsyncSimulation() } else { simRef?.stopAsyncSimulation() }
+        }
+        .onAppear {
+            loadMIDISlots(); syncLFOHistoriesToSlots()
+            if isActive {
+                if midiClockConnection == nil { midiClockConnection = midiClockPublisher.connect() }
+                simRef?.startAsyncSimulation()
+                scnViewRef?.isPlaying = true
+                scnViewRef?.scene?.isPaused = false
+            }
+        }
+        .onDisappear {
+            midiClockConnection?.cancel()
+            midiClockConnection = nil
+            simRef?.stopAsyncSimulation()
+            scnViewRef?.isPlaying = false
+            scnViewRef?.scene?.isPaused = true
+        }
+    }
+}

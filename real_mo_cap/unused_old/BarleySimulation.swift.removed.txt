@@ -1,0 +1,1 @@
+BarleySimulation.swift has been removed as part of the async conversion. All simulation logic now resides in BarleySimulationAsync.swift. If you need any of the data structures (BarleyStalk, WindGust), they should be ported to a shared file or the async simulation file.

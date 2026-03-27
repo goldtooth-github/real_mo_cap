@@ -1,0 +1,57 @@
+Memory Management Fix for SceneKit Simulations
+==============================================
+
+Purpose:
+--------
+This document describes the best practices and implementation steps for robust memory management in SceneKit-based simulations (e.g., Jellyfish, MeshBird, Barley, Boids, etc.). It serves as a prompt and checklist for developers to apply the memory fix pattern to future simulations, ensuring proper cleanup and preventing memory leaks or excessive resource retention.
+
+Implementation Prompt:
+---------------------
+When implementing a new SceneKit simulation, or refactoring an existing one, ensure the following memory management steps are applied:
+
+1. **Node Cleanup:**
+   - In your teardown/dispose/reset method, remove all actions from the root node and all its child nodes:
+     - `rootNode.removeAllActions()`
+     - `rootNode.enumerateChildNodes { node, _ in node.removeAllActions(); node.removeFromParentNode() }`
+   - Remove the root node from the scene:
+     - `sceneRef?.rootNode.childNodes.forEach { node in if node === rootNode { node.removeFromParentNode() } }`
+
+2. **Reference Release:**
+   - Nil out references to SceneKit objects, views, and other retained nodes:
+     - `sceneRef = nil`
+     - `scnView = nil`
+     - Remove and nil out any lights, cameras, or other persistent nodes.
+
+3. **Array and Dictionary Cleanup:**
+   - Clear all arrays, dictionaries, and collections holding references to nodes, materials, or other resources:
+     - `myNodeArray.removeAll()`
+     - `myNodeDict.removeAll()`
+
+4. **Delegate Detachment (Async Sims):**
+   - For async simulations, detach the renderer delegate before releasing the SCNView:
+     - `scnView?.delegate = nil`
+
+5. **Avoid Strong Reference Cycles:**
+   - Use `weak` references for scene/view properties where appropriate.
+   - Avoid capturing strong references to nodes in closures, timers, or delegates.
+
+6. **Testing and Validation:**
+   - After implementing the memory fix, rigorously test teardown/reset scenarios to ensure memory is released and no SceneKit nodes or resources are retained.
+   - Use Xcode's memory graph debugger and Instruments to verify cleanup.
+
+7. **Documentation:**
+   - Document the teardown/cleanup logic in your simulation class for future maintainers.
+
+Example Checklist:
+------------------
+- [ ] Remove all actions from root node and children
+- [ ] Remove root node from scene
+- [ ] Remove and nil out lights, cameras, and other persistent nodes
+- [ ] Clear arrays/dictionaries holding node references
+- [ ] Nil out scene/view references
+- [ ] Detach renderer delegate (if applicable)
+- [ ] Avoid strong reference cycles
+- [ ] Test teardown/reset for leaks
+- [ ] Document cleanup logic
+
+Use this prompt as a template for all future SceneKit simulation implementations to ensure robust memory management and prevent leaks.
