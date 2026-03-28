@@ -1,5 +1,6 @@
 // filepath: /Users/nick/Desktop/lifeform/dumbmachine/universa/universa/PrewarmCenter.swift
 import Foundation
+import CoreMIDI
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -29,6 +30,12 @@ final class PrewarmCenter {
         // which needs a RunLoop. Background GCD threads have no RunLoop.
         DispatchQueue.main.async {
             _ = MIDIOutput.midiManager
+
+            // Enable CoreMIDI Network Session so the Mac can receive MIDI over USB/WiFi.
+            // connectionPolicy = .anyone lets the Mac connect without manual pairing on the iOS side.
+            let session = MIDINetworkSession.default()
+            session.isEnabled = true
+            session.connectionPolicy = .anyone
         }
 
         // Other subsystems can init on background safely

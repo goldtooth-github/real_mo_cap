@@ -245,7 +245,8 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
         }
         .onDisappear {
             print("onDisappear")
-            ensureStopped(reason: "disappear")
+            // Force-release heavy resources when the view is torn down
+            forceReleaseResources(reason: "disappear")
             cancelAutoHide()
         }
     }
@@ -404,6 +405,38 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
         hasStarted = false
     }
 
+    /// Release heavy simulation resources (clip data, geometry, node hierarchies)
+    @MainActor private func releaseSimulationResources(_ sim: LifeformSimulation) {
+        if let s = sim as? AMCASFSimulationAsync {
+            s.teardownAndDispose()
+        }
+    }
+
+    /// Force-release all heavy resources (GPU/Metal textures, simulation data).
+    /// Called on onDisappear when the view is torn down by SwiftUI (e.g. paging away).
+    @MainActor private func forceReleaseResources(reason: String) {
+        // Stop the async loop first
+        if let sim = simRef.value {
+            stopAsyncIfKnown(sim)
+            releaseSimulationResources(sim)
+        }
+        // Release SCNView GPU/Metal resources
+        if let v = scnViewRef {
+            v.isPlaying = false
+            v.delegate = nil
+            v.scene?.rootNode.enumerateChildNodes { node, _ in
+                node.geometry?.firstMaterial?.diffuse.contents = nil
+                node.geometry = nil
+            }
+            v.scene = nil
+        }
+        simRef.value = nil
+        onSimulationUpdated?(nil)
+        sceneViewReady = false
+        hasStarted = false
+        print("[Lifecycle] FORCE-RELEASED all resources (reason=\(reason))")
+    }
+
     // MARK: - Simulation Type Dispatch
     @MainActor private func startAsyncIfKnown(_ sim: LifeformSimulation) {
         log("startAsyncIfKnown type=\(type(of: sim))")
@@ -424,6 +457,8 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
             print("[Lifecycle] START PlanetsSimulationAsync id=\(ObjectIdentifier(s))"); s.startAsyncSimulation()
         case let s as WaveAndLeavesSimulationAsync:
             print("[Lifecycle] START WaveAndLeavesSimulationAsync id=\(ObjectIdentifier(s))"); s.startAsyncSimulation()
+        case let s as AMCASFSimulationAsync:
+            print("[Lifecycle] START AMCASFSimulationAsync id=\(ObjectIdentifier(s))"); s.startAsyncSimulation()
         default:
             print("[Lifecycle] Unknown sim type \(type(of: sim))")
         }
@@ -450,6 +485,8 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
             print("[Lifecycle] STOP PlanetsClusterSimulationAsync id=\(ObjectIdentifier(s))"); s.stopAsyncSimulation()
         case let s as WaveAndLeavesSimulationAsync:
             print("[Lifecycle] STOP WaveAndLeavesSimulationAsync id=\(ObjectIdentifier(s))"); s.stopAsyncSimulation()
+        case let s as AMCASFSimulationAsync:
+            print("[Lifecycle] STOP AMCASFSimulationAsync id=\(ObjectIdentifier(s))"); s.stopAsyncSimulation()
         default:
             print("[Lifecycle] Unknown sim type \(type(of: sim))")
         }

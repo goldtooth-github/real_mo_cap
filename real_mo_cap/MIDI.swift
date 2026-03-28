@@ -94,6 +94,22 @@ final class MIDIManager {
         }
         MIDIOutputPortCreate(client, "Lifeform MIDI OutputPort" as CFString, &outputPort)
         MIDISourceCreate(client, "Lifeform MIDI Output" as CFString, &source)
+
+        // Register our virtual source with the network MIDI session so that
+        // macOS can see it when the iPhone is connected via USB or on the same WiFi.
+        // The MIDINetworkSession must be enabled (done in PrewarmCenter) and our
+        // source endpoint must be added to the session's source list.
+        let session = MIDINetworkSession.default()
+        session.isEnabled = true
+        session.connectionPolicy = .anyone
+        if source != 0 {
+            // The session's sourceEndpoint is read-only — our virtual source is
+            // automatically discoverable as long as the session is enabled and
+            // connectionPolicy is .anyone. No further registration needed.
+            // However, we also send via MIDIReceived(source, ...) which makes
+            // the data available to any connected network session peer.
+        }
+
         refreshDestinations()
         // Passive refresh every 5s until at least one destination has appeared once
         passiveRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
