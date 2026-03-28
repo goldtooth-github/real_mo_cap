@@ -108,6 +108,11 @@ final class AMCASFSimulationAsync: NSObject, LifeformSimulation, SCNSceneRendere
         inner.projectedJointXY127(jointName: inner.rootBoneName)
     }
 
+    /// Returns the projected Z depth of the root bone (0 = near clip, 1 = far clip).
+    @MainActor func rootBoneProjectedZ() -> Float? {
+        inner.projectedJointZ(jointName: inner.rootBoneName)
+    }
+
     // MARK: - Root / loop controls passthrough
     func setRooted(_ r: Bool) { inner.setRooted(r) }
     func setRootedX(_ r: Bool) { inner.setRootedX(r) }
@@ -119,10 +124,11 @@ final class AMCASFSimulationAsync: NSObject, LifeformSimulation, SCNSceneRendere
     var currentLoopStartFrame: Int { inner.currentLoopStartFrame }
     func setLoopEndFrame(_ f: Int?) { inner.setLoopEndFrame(f) }
     var currentLoopEndFrame: Int? { inner.currentLoopEndFrame }
+    func setLoopCrossfadeFrames(_ n: Int) { inner.setLoopCrossfadeFrames(n) }
+    func centerRootVertically(screenFraction: Float = 0.65, orthoScale: Float = 30) { inner.centerRootVertically(screenFraction: screenFraction, orthoScale: orthoScale) }
     
     // MARK: - Teardown
     deinit {
-        print("✅ AMCASF deinit")
         teardownAndDispose()
     }
     

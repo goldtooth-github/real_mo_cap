@@ -47,6 +47,8 @@ private struct AMCASFPreset: Codable {
 }
 // Track whether the root bone has gone offscreen
 private var rootWasOffscreen = false
+// Track whether the root bone was too close to camera (Z depth clipping)
+private var rootWasTooCloseZ = false
 
 final class AMCASFSimHolder: ObservableObject { @Published var sim: AMCASFSimulationAsync? = nil }
 
@@ -59,8 +61,10 @@ struct AMCASFViewerLifeformViewAsync: View {
     var isDisplayLockPressed: Binding<Bool>
     var asfName: String = "09"
     var amcName: String = "09_03"
+    var displayName: String? = nil   // optional human-readable name for the config title
     var loopStartFrame: Int? = nil   // nil = 0 (first frame)
     var loopEndFrame: Int? = nil     // nil = full clip length
+    var loopCrossfadeFrames: Int = 30 // frames over which to crossfade at loop seam
 
     @StateObject private var holder = AMCASFSimHolder()
     @StateObject private var cameraState = CameraOrbitState()
@@ -82,9 +86,9 @@ struct AMCASFViewerLifeformViewAsync: View {
     @State private var cameraBaseY: Float? = nil
     // Gravity control amount (0..5 in 0.5 steps)
     @State private var gravityAmount: Float = 0.0
-    // Root fixed per-axis (keeps root bone anchored at origin)
-    @State private var rootFixedX: Bool = true
-    @State private var rootFixedY: Bool = true
+    // Root anchoring: X is permanently fixed, Y is permanently unfixed
+    private let rootFixedX: Bool = true
+    private let rootFixedY: Bool = false
 
     // Deduplication - remember last applied values to avoid redundant SceneKit updates
     @State private var lastAppliedModelRotation: Float? = nil
@@ -126,7 +130,7 @@ struct AMCASFViewerLifeformViewAsync: View {
         directionalLightIntensity: 0.9,
         directionalLightAngles: SCNVector3(x: -Float.pi/4, y: Float.pi/4, z: 0),
         updateInterval: 0.016,
-        title: "Runner \(amcName)",
+        title: displayName ?? amcName,
         controlPanelColor: Color.black.opacity(0.6),
         controlTextColor: .white,
         buttonBackgroundColor: Color.blue.opacity(0.6),
@@ -144,12 +148,29 @@ struct AMCASFViewerLifeformViewAsync: View {
         sim.setRootedY(rootFixedY)
         // Auto-load bundled ASF + AMC immediately
         sim.loadFiles(asfName: asfName, amcName: amcName)
-        // Schedule a brief delayed interpretation of load state so loop bounds get applied
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            interpretLoadState()
-        }
+        // Store sim reference BEFORE polling so pollUntilLoaded can access it
         holder.sim = sim
+        // Poll until load completes so loop bounds are reliably applied
+        pollUntilLoaded()
         return sim
+    }
+
+    /// Repeatedly checks load state until ready (or failed), then applies loop bounds.
+    private func pollUntilLoaded(attempt: Int = 0) {
+        guard let sim = holder.sim else { return }
+        switch sim.loadState {
+        case .ready:
+            interpretLoadState()
+        case .failed:
+            interpretLoadState()
+        case .loading, .idle:
+            // Retry after a short delay, up to ~5 seconds
+            if attempt < 50 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.pollUntilLoaded(attempt: attempt + 1)
+                }
+            }
+        }
     }
 
     private func currentSettings() -> AMCASFSettings {
@@ -176,8 +197,9 @@ struct AMCASFViewerLifeformViewAsync: View {
         gravityAmount = s.gravityAmount; holder.sim?.inner.setGravity(amount: s.gravityAmount)
         displayLFOOutputs = s.displayLFOOutputs
         reduceCPUOverhead = s.reduceCPUOverhead
-        rootFixedX = s.rootFixedX; holder.sim?.setRootedX(s.rootFixedX)
-        rootFixedY = s.rootFixedY; holder.sim?.setRootedY(s.rootFixedY)
+        // Root X/Y are permanently fixed/unfixed
+        holder.sim?.setRootedX(true)
+        holder.sim?.setRootedY(false)
         if let node = holder.sim?.inner.rootNode {
             node.position = SCNVector3(s.modelPosX, s.modelPosY, s.modelPosZ)
         }
@@ -200,21 +222,6 @@ struct AMCASFViewerLifeformViewAsync: View {
                 Slider(value: Binding(get: { Double(modelRotation) }, set: { v in modelRotation = Float(v) }), in: -180.0...180.0)
                 Text(String(format: "%.0f°", modelRotation)).foregroundColor(config.controlTextColor).frame(width: 56)
             }
-            // Root fixed per-axis toggles
-            HStack(spacing: 20) {
-                Toggle("Fix Root X", isOn: Binding(
-                    get: { rootFixedX },
-                    set: { newVal in rootFixedX = newVal; holder.sim?.setRootedX(newVal) }
-                ))
-                    .toggleStyle(.switch)
-                    .foregroundColor(config.controlTextColor)
-                Toggle("Fix Root Y", isOn: Binding(
-                    get: { rootFixedY },
-                    set: { newVal in rootFixedY = newVal; holder.sim?.setRootedY(newVal) }
-                ))
-                    .toggleStyle(.switch)
-                    .foregroundColor(config.controlTextColor)
-            }
 
             // MIDI / LFO controls
             Toggle("Display LFO outputs", isOn: $displayLFOOutputs)
@@ -236,9 +243,7 @@ struct AMCASFViewerLifeformViewAsync: View {
         showLoadError = false; loadErrorMessage = ""
         guard let sim = holder.sim else { return }
         sim.loadFiles(asfName: asfName, amcName: amcName) // Always loads from bundle
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            interpretLoadState()
-        }
+        pollUntilLoaded()
     }
 
     private func interpretLoadState() {
@@ -250,6 +255,12 @@ struct AMCASFViewerLifeformViewAsync: View {
             // Apply per-file loop bounds after clip is loaded
             sim.setLoopStartFrame(loopStartFrame)
             sim.setLoopEndFrame(loopEndFrame)
+            sim.setLoopCrossfadeFrames(loopCrossfadeFrames)
+            // Center the figure vertically: root at 65% up from the bottom
+            let ortho = Float(scnViewRef?.pointOfView?.camera?.orthographicScale ?? Double(cameraState.radius))
+            sim.centerRootVertically(screenFraction: 0.65, orthoScale: ortho)
+            // Reset playback to the correct start frame
+            sim.inner.reset()
         case .failed(let err):
             showLoadError = true
             loadErrorMessage = err.localizedDescription
@@ -376,7 +387,6 @@ struct AMCASFViewerLifeformViewAsync: View {
                 } else if let settingsOnly = try? JSONDecoder().decode(AMCASFSettings.self, from: data) {
                     applySettings(settingsOnly)
                 } else {
-                    print("[AMCASF] Failed to decode settings. Preview: \(preview)")
                 }
             }
         )
@@ -478,9 +488,7 @@ struct AMCASFViewerLifeformViewAsync: View {
     private func coordForTracker(_ tracker: String) -> String { tracker }
 
     private func colorForTrackerHash(_ tracker: String) -> Color {
-        let hash = abs(tracker.hashValue)
-        let hue = Double(hash % 360) / 360.0
-        return Color(hue: hue, saturation: 0.7, brightness: 0.9)
+        BoneColor.colorForTracker(tracker)
     }
 
     private func normalizeToCC(raw: Float, minVal: Float, maxVal: Float) -> Int {
@@ -507,7 +515,7 @@ struct AMCASFViewerLifeformViewAsync: View {
 
         guard let rawXY = sim.rootBoneScreenXY127Raw(),
               let rootWorld = sim.jointWorldPosition(sim.inner.rootBoneName) else {
-            if !rootWasOffscreen { rootWasOffscreen = true; print("[AMCASF] Root projection failed (treat as off-screen)") }
+            if !rootWasOffscreen { rootWasOffscreen = true }
             return
         }
 
@@ -523,10 +531,8 @@ struct AMCASFViewerLifeformViewAsync: View {
         let screenY = (1.0 - CGFloat(rawXY.y) / 127.0) * h
         let isOffscreen = (screenX < minX || screenX > maxX || screenY < minY || screenY > maxY)
 
-        if isOffscreen && !rootWasOffscreen {
-            rootWasOffscreen = true;
-            print("[AMCASF] Root off-screen: raw=(\(rawXY.x), \(rawXY.y))") }
-        else if !isOffscreen && rootWasOffscreen { rootWasOffscreen = false; print("[AMCASF] Root back on-screen: raw=(\(rawXY.x), \(rawXY.y))") }
+        if isOffscreen && !rootWasOffscreen { rootWasOffscreen = true }
+        else if !isOffscreen && rootWasOffscreen { rootWasOffscreen = false }
         guard isOffscreen else { return }
 
         let clampedX = min(max(screenX, minX), maxX)
@@ -553,6 +559,52 @@ struct AMCASFViewerLifeformViewAsync: View {
         }
     }
 
+    /// Prevents the root bone from getting too close to (or passing through) the camera's near clip plane.
+    /// Checks the screen-space projected Z of the root bone; if it drops below a safe threshold,
+    /// the figure is pushed back along the camera's forward axis via rootBasePosition.
+    private func clampRootDepthIfNeeded(sim: AMCASFSimulationAsync) {
+        if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
+        guard let scnView = sim.scnView, let camera = scnView.pointOfView else { return }
+
+        // Get projected Z (0 = near clip, 1 = far clip)
+        guard let projZ = sim.rootBoneProjectedZ() else { return }
+
+        // Safety margin: keep the root bone at least this far into the depth buffer.
+        // 0.0 = exactly at near clip, 1.0 = at far clip. 0.02 gives comfortable headroom.
+        let minSafeZ: Float = 0.02
+
+        if projZ < minSafeZ {
+            if !rootWasTooCloseZ {
+                rootWasTooCloseZ = true
+            }
+
+            guard let rootWorld = sim.jointWorldPosition(sim.inner.rootBoneName) else { return }
+
+            // Compute world-space position at the safe depth threshold
+            let projected = scnView.projectPoint(rootWorld)
+            // Build a target screen point with the same X/Y but at the safe Z depth
+            let safeScreenPoint = SCNVector3(projected.x, projected.y, minSafeZ)
+            let safeWorld = scnView.unprojectPoint(safeScreenPoint)
+
+            // Delta from current world position to the safe position (pushes away from camera)
+            let delta = safeWorld - rootWorld
+            guard delta.x.isFinite && delta.y.isFinite && delta.z.isFinite else { return }
+
+            // Apply correction via rootBasePosition along camera forward
+            let k: Float = 0.5 // slightly aggressive to prevent clipping
+            if var base = sim.inner.rootBasePosition as SIMD3<Float>? {
+                base.x += delta.x * k
+                base.y += delta.y * k
+                base.z += delta.z * k
+                sim.inner.rootBasePosition = base
+            }
+        } else {
+            if rootWasTooCloseZ {
+                rootWasTooCloseZ = false
+            }
+        }
+    }
+
     // MARK: - MIDI Tick Loop
     @MainActor
     private func midiTickLoop() {
@@ -560,6 +612,7 @@ struct AMCASFViewerLifeformViewAsync: View {
             guard let sim = holder.sim else { return }
             if sim.scnView == nil, let fallback = scnViewRef { sim.scnView = fallback }
             logRootOutOfScreenIfNeeded(sim: sim)
+            clampRootDepthIfNeeded(sim: sim)
             if lfoHistories.count != midiSlots.count { syncLFOHistoriesToSlots() }
 
             let now = CACurrentMediaTime()

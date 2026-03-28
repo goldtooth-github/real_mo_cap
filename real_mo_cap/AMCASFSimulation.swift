@@ -63,7 +63,6 @@ final class AMCASFModelHolder: ObservableObject {
 
     deinit {
         loadTask?.cancel()
-        print("AMCAS deinit")
     }
 
     // Load ASF/AMC from bundle (uses cache internally)
@@ -107,7 +106,6 @@ final class AMCASFModelHolder: ObservableObject {
                 await MainActor.run { [weak self] in
                     self?.isLoading = false
                 }
-                print("AMCASFModelHolder: failed to load bundle \(asfName)|\(amcName): \(error)")
             }
         }
     }
@@ -153,7 +151,6 @@ final class AMCASFModelHolder: ObservableObject {
                 await MainActor.run { [weak self] in
                     self?.isLoading = false
                 }
-                print("AMCASFModelHolder: failed to load paths \(asfPath)|\(amcPath): \(error)")
             }
         }
     }
@@ -238,6 +235,11 @@ final class AMCASFSimulation: LifeformSimulation {
             loopEndFrame = nil
         }
     }
+
+    /// Number of frames over which to crossfade from the end of the loop back into the start,
+    /// eliminating the visible "jump" at the seam. 0 = no crossfade (hard cut).
+    private var loopCrossfadeFrames: Int = 30
+    public func setLoopCrossfadeFrames(_ n: Int) { loopCrossfadeFrames = max(0, n) }
     
     // Head joint radius customization
     private var headRadiusScale: Float = 3.0 // multiplier applied only to head joint base sphere radius
@@ -304,7 +306,6 @@ final class AMCASFSimulation: LifeformSimulation {
     private let baseScale: Float = 1.0
 
     private let directionEpsilon: Float = 1e-6
-    private let enableBoneDebugLogging = false
     private let useParentOffsetRule = true // toggles offset algorithm
     private let maxUserOffset: Float = 60 // cap translation drift
     private var userOffset: SIMD3<Float> = .zero
@@ -341,6 +342,7 @@ final class AMCASFSimulation: LifeformSimulation {
             parsedRootOrientation = cached.parsedRootOrientation
             clip = cached.clip
             rebuildScene()
+            centerRootVertically()
             applyFrame(0)
             return
         }
@@ -358,6 +360,7 @@ final class AMCASFSimulation: LifeformSimulation {
             AMCASFModelCache.shared.set(cacheKey, parsed)
         }
         rebuildScene()
+        centerRootVertically()
         applyFrame(0)
     }
     
@@ -373,6 +376,7 @@ final class AMCASFSimulation: LifeformSimulation {
             parsedRootOrientation = cached.parsedRootOrientation
             clip = cached.clip
             rebuildScene()
+            centerRootVertically()
             applyFrame(0)
             return
         }
@@ -389,6 +393,7 @@ final class AMCASFSimulation: LifeformSimulation {
             AMCASFModelCache.shared.set(cacheKey, parsed)
         }
         rebuildScene()
+        centerRootVertically()
         applyFrame(0)
     }
 
@@ -463,7 +468,6 @@ final class AMCASFSimulation: LifeformSimulation {
                         if abs(vz) < directionEpsilon { vz = 0 }
                         let vec = SIMD3<Float>(vx, vy, vz)
                         dirForBone[bone] = vec
-                        if enableBoneDebugLogging { print("ASF bone raw direction: \(bone) -> \(vec)") }
                     } else { continue }
                 } else if line.lowercased().hasPrefix("length") {
                     let parts = line.split(separator: " ")
@@ -606,7 +610,6 @@ final class AMCASFSimulation: LifeformSimulation {
                 let cylNode = cylinderBetween(.zero, SCNVector3(offset.x, offset.y, offset.z), radius: 0.35)
                 parentNode.addChildNode(cylNode); linkNodes[parentName+"->"+name] = cylNode
             }
-            if enableBoneDebugLogging { print("Placed bone \(bone.name) using \(useParentOffsetRule ? "parent" : "child") dir: \(offsetDir) len: \(parentBone.length)") }
         } else {
             rootNode.addChildNode(node)
         }
@@ -616,8 +619,7 @@ final class AMCASFSimulation: LifeformSimulation {
     private func findParent(of child: String) -> String? { for (n,b) in bones where b.children.contains(child) { return n }; return nil }
 
     private func colorForBone(_ name: String) -> UIColor {
-        let hash = abs(name.hashValue); let hue = CGFloat(hash % 360) / 360.0
-        return UIColor(hue: hue, saturation: 0.6, brightness: 0.9, alpha: 1)
+        BoneColor.uiColor(for: name)
     }
     private func makeMaterial(_ color: UIColor) -> SCNMaterial { let m = SCNMaterial(); m.diffuse.contents = color; m.lightingModel = .blinn; return m }
 
@@ -668,7 +670,26 @@ final class AMCASFSimulation: LifeformSimulation {
 
     func reset() { let start = loopStartFrame; currentTime = Float(start) * (clip?.frameTime ?? 0); currentFrameIndex = start; userOffset = .zero; if clip != nil { applyFrame(start) } }
 
-    // Quaternion helpers
+    /// Adjusts rootBasePosition.y so the root bone sits at the given vertical screen fraction
+    /// (0 = bottom of view, 0.5 = centre, 1 = top) based on the ty value of the current loop start frame.
+    /// `orthoScale` is the camera's orthographicScale (half the visible vertical extent in world units).
+    func centerRootVertically(screenFraction: Float = 0.65, orthoScale: Float = 30) {
+        guard let clip = clip else { return }
+        let startFrame = loopStartFrame
+        guard startFrame < clip.frames.count else { return }
+        guard let bone = bones[rootBoneName] else { return }
+        let pose = clip.frames[startFrame]
+        guard let values = pose.channels[rootBoneName] else { return }
+        // Extract ty from the start frame
+        var ty: Float = 0
+        for (i, ch) in bone.dofChannels.enumerated() where i < values.count {
+            if ch == "ty" { ty = values[i]; break }
+        }
+        // screenFraction 0.5 = centre (Y=0), 0 = bottom (-orthoScale), 1 = top (+orthoScale)
+        // targetY = (screenFraction * 2 - 1) * orthoScale  →  e.g. 0.65 → 0.3 * orthoScale
+        let targetY = (screenFraction * 2.0 - 1.0) * orthoScale
+        rootBasePosition.y = targetY - ty
+    }
     private func quatFromEuler(anglesDeg: SIMD3<Float>, order: String) -> simd_quatf {
         let angles = anglesDeg * (.pi/180)
         var q = simd_quatf(angle: 0, axis: SIMD3<Float>(1,0,0)) // identity
@@ -774,6 +795,24 @@ final class AMCASFSimulation: LifeformSimulation {
         if gravityEnabled && jointChannelMinMax.isEmpty { computeJointMinMax() }
         let pose = clip.frames[frame]
 
+        // --- Loop crossfade blending ---
+        // If we're within the last `loopCrossfadeFrames` before the loop end,
+        // blend this frame's channel values toward the loop-start frame to eliminate the seam.
+        let endFrame = loopEndFrame ?? clip.frames.count
+        let startFrame = loopStartFrame
+        let crossfadeRegionStart = endFrame - loopCrossfadeFrames
+        let blendFactor: Float  // 0 = use current frame as-is, 1 = fully at start frame
+        let startPose: AMSFramePose?
+        if looping && loopCrossfadeFrames > 0 && frame >= crossfadeRegionStart && frame < endFrame && startFrame < clip.frames.count {
+            // t goes from 0.0 (at crossfadeRegionStart) to 1.0 (at endFrame-1)
+            let framesIntoFade = frame - crossfadeRegionStart
+            blendFactor = Float(framesIntoFade + 1) / Float(loopCrossfadeFrames)
+            startPose = clip.frames[startFrame]
+        } else {
+            blendFactor = 0
+            startPose = nil
+        }
+
         SCNTransaction.begin()
         SCNTransaction.animationDuration = 0
         SCNTransaction.disableActions = true
@@ -782,7 +821,30 @@ final class AMCASFSimulation: LifeformSimulation {
         for name in Array(bones.keys) {
             guard let bone = bones[name] else { continue }
             guard let node = boneNodes[name] else { continue }
-            guard let values = pose.channels[name] else { continue }
+            guard var values = pose.channels[name] else { continue }
+            // --- Apply crossfade blend toward start frame ---
+            // For rotation channels, use shortest-path angle interpolation (wrap ±180°)
+            // to prevent wild spinning when accumulated angles differ by large amounts.
+            if blendFactor > 0, let sp = startPose, let startValues = sp.channels[name] {
+                let count = min(values.count, startValues.count)
+                let channelCount = bone.dofChannels.count
+                for i in 0..<count {
+                    let ch = i < channelCount ? bone.dofChannels[i] : ""
+                    let isRotation = ch == "rx" || ch == "ry" || ch == "rz"
+                    if isRotation {
+                        // Shortest-path angle interpolation:
+                        // Wrap the difference to ±180° so we always take the short way around
+                        var diff = startValues[i] - values[i]
+                        diff = diff.truncatingRemainder(dividingBy: 360)
+                        if diff > 180 { diff -= 360 }
+                        else if diff < -180 { diff += 360 }
+                        values[i] = values[i] + diff * blendFactor
+                    } else {
+                        // Translation and other channels: direct linear interpolation
+                        values[i] = values[i] + (startValues[i] - values[i]) * blendFactor
+                    }
+                }
+            }
             var scaledValues = values
             if gravityEnabled {
                 // Scale per channel using its own min/max for this joint
@@ -828,21 +890,32 @@ final class AMCASFSimulation: LifeformSimulation {
     // MARK: Tracker API
     // MARK: LifeformSimulation extras
     func trackerNames() -> [String] {
-        // Only expose built (non-ignored) bones
+        guard !isDisposed else { return ["frame.index"] }
         var arr: [String] = boneNodes.keys.flatMap { ["\($0).x","\($0).y"] }
         arr.append("frame.index")
         return arr.sorted()
     }
     func jointWorldPosition(_ name: String) -> SCNVector3? {
+        guard !isDisposed else { return nil }
         if name == "frame.index" { return nil }
         let bone = name.split(separator: ".").first.map(String.init) ?? ""
         return boneNodes[bone]?.worldPosition
     }
     func projectedJointXY127(jointName: String) -> (x: Int, y: Int)? {
+        guard !isDisposed else { return nil }
         guard let scnView = scnView, let node = boneNodes[jointName] else { return nil }
         let p = scnView.projectPoint(node.worldPosition); let w = max(scnView.bounds.width,1); let h = max(scnView.bounds.height,1)
         let nx = max(0,min(1,CGFloat(p.x)/w)); let ny = max(0,min(1,1 - CGFloat(p.y)/h))
         return (Int(round(nx*127)), Int(round(ny*127)))
+    }
+
+    /// Returns the projected-space Z depth of a joint (0 = near clip, 1 = far clip).
+    /// Values <= 0 mean the joint is behind / at the near clip plane (clipped).
+    func projectedJointZ(jointName: String) -> Float? {
+        guard !isDisposed else { return nil }
+        guard let scnView = scnView, let node = boneNodes[jointName] else { return nil }
+        let p = scnView.projectPoint(node.worldPosition)
+        return p.z
     }
 
     // MARK: Teardown
@@ -860,95 +933,6 @@ final class AMCASFSimulation: LifeformSimulation {
             // Break scene references
             rootNode.removeFromParentNode()
         sceneRef = nil; scnView = nil
-    }
-    
-    // MARK: Debug First Frame
-    func debugFirstFrame() {
-        guard let clip = clip, !clip.frames.isEmpty else {
-            print("❌ No frames loaded")
-            return
-        }
-        
-        let frame = clip.frames[0]
-        print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        print("📊 FIRST FRAME BREAKDOWN (Frame 0)")
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-        
-        // Root bone first (special case with translation)
-        if let rootValues = frame.channels[rootBoneName],
-           let rootBone = bones[rootBoneName] {
-            print("🔷 \(rootBoneName.uppercased()) (World Root)")
-            print("   DOF Channels: \(rootBone.dofChannels.joined(separator: ", "))")
-            print("   Raw AMC values: \(rootValues.map { String(format: "%.4f", $0) }.joined(separator: ", "))")
-            
-            var tx: Float = 0, ty: Float = 0, tz: Float = 0
-            var rx: Float = 0, ry: Float = 0, rz: Float = 0
-            
-            for (i, ch) in rootBone.dofChannels.enumerated() where i < rootValues.count {
-                let v = rootValues[i]
-                switch ch {
-                case "tx": tx = v; print("      tx = \(v)")
-                case "ty": ty = v; print("      ty = \(v)")
-                case "tz": tz = v; print("      tz = \(v)")
-                case "rx": rx = v; print("      rx = \(v)°")
-                case "ry": ry = v; print("      ry = \(v)°")
-                case "rz": rz = v; print("      rz = \(v)°")
-                default: break
-                }
-            }
-            
-            let pre = rootBone.axisPreRotation
-            let rotEuler = SIMD3<Float>(rx, ry, rz) + pre
-            
-            print("   → World Position: (\(tx), \(ty), \(tz))")
-            print("   → Axis Pre-rotation: (\(pre.x)°, \(pre.y)°, \(pre.z)°)")
-            print("   → Final Euler Rotation: (\(rotEuler.x)°, \(rotEuler.y)°, \(rotEuler.z)°)\n")
-        }
-        
-        // All other bones (rotation only, positioned relative to parent)
-        let sortedBones = bones.keys.filter { $0 != rootBoneName && !isIgnoredBone($0) }.sorted()
-        
-        for boneName in sortedBones {
-            guard let bone = bones[boneName] else { continue }
-            
-            print("🔹 \(boneName)")
-            print("   DOF Channels: \(bone.dofChannels.joined(separator: ", "))")
-            print("   Direction: (\(bone.direction.x), \(bone.direction.y), \(bone.direction.z))")
-            print("   Length: \(bone.length)")
-            print("   Axis Pre-rotation: (\(bone.axisPreRotation.x)°, \(bone.axisPreRotation.y)°, \(bone.axisPreRotation.z)°)")
-            
-            if let values = frame.channels[boneName] {
-                print("   Raw AMC values: \(values.map { String(format: "%.4f", $0) }.joined(separator: ", "))")
-                
-                var rx: Float = 0, ry: Float = 0, rz: Float = 0
-                
-                for (i, ch) in bone.dofChannels.enumerated() where i < values.count {
-                    let v = values[i]
-                    switch ch {
-                    case "rx": rx = v; print("      rx = \(v)°")
-                    case "ry": ry = v; print("      ry = \(v)°")
-                    case "rz": rz = v; print("      rz = \(v)°")
-                    default: break
-                    }
-                }
-                
-                let finalEuler = SIMD3<Float>(rx, ry, rz) + bone.axisPreRotation
-                print("   → Local Euler Rotation: (\(finalEuler.x)°, \(finalEuler.y)°, \(finalEuler.z)°)")
-                
-                // Show world position if node exists
-                if let node = boneNodes[boneName] {
-                    let wp = node.worldPosition
-                    print("   → World Position: (\(wp.x), \(wp.y), \(wp.z))")
-                }
-            } else {
-                print("   ⚠️  No AMC data (using default pre-rotation only)")
-                print("   → Local Euler Rotation: (\(bone.axisPreRotation.x)°, \(bone.axisPreRotation.y)°, \(bone.axisPreRotation.z)°)")
-            }
-            
-            print()
-        }
-        
-        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
     }
 }
 

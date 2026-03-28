@@ -60,16 +60,16 @@ private struct RootLaunchView: View {
             if showSplash {
                 VStack(spacing: 12) {
                     
-                    Text("Dumb Machine")
-                        .font(.system(size: 18, weight: .regular))
-                        .kerning(0.5)
+                    Text("LifeForm Oscillator")
+                        .font(.system(size: 24, weight: .bold))
+                        .kerning(1)
                     
-                    Image("lifeff")
+                    Image("Lifeform 2")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 120, height: 120)
                     
-                    Text("LifeForm Oscillator")
+                    Text("HUMAN")
                         .font(.system(size: 36, weight: .bold))
                         .kerning(1)
                     

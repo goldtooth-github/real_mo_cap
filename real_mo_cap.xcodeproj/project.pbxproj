@@ -8,12 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		01168C072E88087300F54F0B /* old.txt in Resources */ = {isa = PBXBuildFile; fileRef = 01168C062E88086B00F54F0B /* old.txt */; };
-		014BA3592E5A3562000C15C0 /* Lifeform.png in Resources */ = {isa = PBXBuildFile; fileRef = 014BA3582E5A3562000C15C0 /* Lifeform.png */; };
 		017741FC2E883B86000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 017741FB2E883B85000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift */; };
 		017741FE2E8941BD000D88DC /* memoryfix.txt in Sources */ = {isa = PBXBuildFile; fileRef = 017741FD2E8941B8000D88DC /* memoryfix.txt */; };
 		0199EA5C2E80596B008D3C74 /* cleanup.old.old in Sources */ = {isa = PBXBuildFile; fileRef = 0199EA5B2E80595C008D3C74 /* cleanup.old.old */; };
 		0199EA5E2E8074F5008D3C74 /* pad.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0199EA5D2E8074EC008D3C74 /* pad.txt */; };
 		0199EA602E808060008D3C74 /* pad2.txt in Resources */ = {isa = PBXBuildFile; fileRef = 0199EA5F2E808056008D3C74 /* pad2.txt */; };
+		01AD50FA2F7738E40070CD1D /* Lifeform.png in Resources */ = {isa = PBXBuildFile; fileRef = 01AD50F92F7738E30070CD1D /* Lifeform.png */; };
 		01B354EA2E83069D00308547 /* fix.txt in Resources */ = {isa = PBXBuildFile; fileRef = 01B354E92E83069500308547 /* fix.txt */; };
 /* End PBXBuildFile section */
 
@@ -36,7 +36,6 @@
 
 /* Begin PBXFileReference section */
 		01168C062E88086B00F54F0B /* old.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = old.txt; sourceTree = "<group>"; };
-		014BA3582E5A3562000C15C0 /* Lifeform.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Lifeform.png; sourceTree = "<group>"; };
 		017741FB2E883B85000D88DC /* teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = teardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDisposeteardownAndDispose.swift; sourceTree = "<group>"; };
 		017741FD2E8941B8000D88DC /* memoryfix.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = memoryfix.txt; sourceTree = "<group>"; };
 		01934D372E2CF53D001AB4EC /* real_mo_cap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = real_mo_cap.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -45,6 +44,7 @@
 		0199EA5B2E80595C008D3C74 /* cleanup.old.old */ = {isa = PBXFileReference; lastKnownFileType = text; path = cleanup.old.old; sourceTree = "<group>"; };
 		0199EA5D2E8074EC008D3C74 /* pad.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = pad.txt; sourceTree = "<group>"; };
 		0199EA5F2E808056008D3C74 /* pad2.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = pad2.txt; sourceTree = "<group>"; };
+		01AD50F92F7738E30070CD1D /* Lifeform.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Lifeform.png; sourceTree = "<group>"; };
 		01B354E92E83069500308547 /* fix.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = fix.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -152,8 +152,8 @@
 				01934D4C2E2CF540001AB4EC /* real_mo_capTests */,
 				01934D562E2CF540001AB4EC /* real_mo_capUITests */,
 				01934D382E2CF53D001AB4EC /* Products */,
-				014BA3582E5A3562000C15C0 /* Lifeform.png */,
 				0199EA5B2E80595C008D3C74 /* cleanup.old.old */,
+				01AD50F92F7738E30070CD1D /* Lifeform.png */,
 				0199EA5D2E8074EC008D3C74 /* pad.txt */,
 				0199EA5F2E808056008D3C74 /* pad2.txt */,
 				017741FD2E8941B8000D88DC /* memoryfix.txt */,
@@ -293,10 +293,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				01AD50FA2F7738E40070CD1D /* Lifeform.png in Resources */,
 				0199EA602E808060008D3C74 /* pad2.txt in Resources */,
 				0199EA5E2E8074F5008D3C74 /* pad.txt in Resources */,
 				01B354EA2E83069D00308547 /* fix.txt in Resources */,
-				014BA3592E5A3562000C15C0 /* Lifeform.png in Resources */,
 				01168C072E88087300F54F0B /* old.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -490,7 +490,7 @@
 				DEVELOPMENT_TEAM = RPTA5SU4N6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = LifeForm;
+				INFOPLIST_KEY_CFBundleDisplayName = "Lifeform Oscillator - Human";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to advertise and connect as a MIDI device for music and DAW integration.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -506,7 +506,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "lifeform.real-mo-cap";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -527,7 +527,7 @@
 				DEVELOPMENT_TEAM = RPTA5SU4N6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = LifeForm;
+				INFOPLIST_KEY_CFBundleDisplayName = "Lifeform Oscillator - Human";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "This app uses Bluetooth to advertise and connect as a MIDI device for music and DAW integration.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -543,7 +543,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "lifeform.real-mo-cap";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = YES;
+				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;

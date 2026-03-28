@@ -24,12 +24,10 @@ struct PageControl: View {
     var body: some View {
         HStack {
             Button(action: {
-                print("Left arrow tapped")
                 onPrevious()
             }) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .bold))
-                    // Use fixed, high-contrast colors so arrows remain readable regardless of color scheme
                     .foregroundStyle(currentPage == 0 ? Color.white.opacity(0.35) : Color.white)
                     .padding(10)
             }
@@ -44,7 +42,6 @@ struct PageControl: View {
                 }
             }
             Button(action: {
-                print("Right arrow tapped")
                 onNext()
             }) {
                 Image(systemName: "chevron.right")
@@ -75,18 +72,18 @@ struct LifeformsPageView: View {
     @State private var previousSelection: Int = 0
     @State private var settledSelection: Int = 0 // Track the visually settled page
     
-    // 10 different motion capture file pairs (loopStart/loopEnd: nil = use defaults)
-    private let mocapFiles: [(asf: String, amc: String, loopStart: Int?, loopEnd: Int?)] = [
-        ("09",  "09_03",   nil, nil),
-        ("02",  "02_03",   nil, nil),
-        ("05",  "05_14",   nil, nil),
-        ("60",  "60_07",   nil, nil),
-        ("85",  "85_14",   nil, nil),
-        ("118", "118_14",  nil, nil),
-        ("128", "128_10",  nil, nil),
-        ("133", "133_01",  nil, nil),
-        ("137", "137_29",  nil, nil),
-        ("143", "143_34",  nil, nil),
+    // 10 different motion capture file pairs (loopStart/loopEnd: nil = use defaults, crossfade: frames for loop transition)
+    private let mocapFiles: [(name: String, asf: String, amc: String, loopStart: Int?, loopEnd: Int?, crossfade: Int)] = [
+        ("Old to Animal",         "133", "133_01",  100, 1050,  60),
+        ("Jump to spot",   "118", "118_14",  nil, nil,  60),// loops nice
+        ("Jogger",        "09",  "09_03",   nil, 91,   2), // loops nicely
+        ("Salsa",          "60",  "60_07",   20,  nil,  30), //loops nicely
+        ("Showoff",     "85",  "85_14",   60,  2600, 60), // loops nice
+        ("tumble",           "128", "128_10",  nil, 380,  60), // loops nice, I think
+        ("Circles",        "137", "137_29",  60, nil,  60),
+        ("Chicken Dance",      "143", "143_34",  nil, nil,  30),// loops nice
+        ("Banana fall",      "90", "90_17",  nil, nil,  0),// loops nice
+        ("fighter?",      "135", "135_04",  nil, 750,  60)// loops nice
     ]
     
     private var pageCount: Int { mocapFiles.count }
@@ -176,16 +173,18 @@ struct LifeformsPageView: View {
                 isDisplayLockPressed: $isDisplayLockPressed,
                 asfName: files.asf,
                 amcName: files.amc,
+                displayName: files.name,
                 loopStartFrame: files.loopStart,
-                loopEndFrame: files.loopEnd
+                loopEndFrame: files.loopEnd,
+                loopCrossfadeFrames: files.crossfade
             )
         } else {
             Color.clear
         }
     }
 
-    private func activate(_ i: Int) { print("Activate page \(i)") }
-    private func deactivate(_ i: Int) { print("Deactivate page \(i)") }
+    private func activate(_ i: Int) { }
+    private func deactivate(_ i: Int) { }
 }
 
 #Preview {
