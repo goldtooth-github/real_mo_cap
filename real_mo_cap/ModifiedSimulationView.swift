@@ -77,6 +77,9 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
     @State private var lastLoadedSettingsData: Data? = nil
     @State private var initialSettingsData: Data? = nil
 
+    @State private var exportDocument: RawDataDocument? = nil
+    @State private var exportDefaultName: String = "Settings"
+
     // MARK: - Init
     init(
         config: LifeformViewConfig,
@@ -163,16 +166,14 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
                 }
             }
         }
-        // Exporter
-        .sheet(isPresented: Binding(get: { showExporter && exportData != nil }, set: { showExporter = $0 })) {
-            if let data = exportData {
-                let filename = "\(config.title) Settings.json"
-                DataExportPicker(
-                    data: data,
-                    defaultFilename: filename,
-                    onComplete: { showExporter = false }
-                )
-            }
+        // Exporter — SwiftUI .fileExporter with editable filename at the bottom
+        .fileExporter(
+            isPresented: $showExporter,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportDefaultName
+        ) { result in
+            exportDocument = nil
         }
         .fileImporter(isPresented: Binding(get: { showImporter }, set: { showImporter = $0 }), allowedContentTypes: [.json]) { importResult in
             switch importResult {
@@ -227,7 +228,12 @@ struct ModifiedSimulationView<SimulationType: LifeformSimulation>: View {
             if panelAutoHideEnabled { scheduleAutoHide() }
             // Wire SettingsIOActions handlers
             settingsIO.requestExport = {
-                if let snap = getSettingsData?() { exportData = snap; showExporter = true }
+                if let snap = getSettingsData?() {
+                    exportData = snap
+                    exportDocument = RawDataDocument(data: snap)
+                    exportDefaultName = "\(config.title) Settings"
+                    showExporter = true
+                }
             }
             settingsIO.requestImport = { showImporter = true }
             settingsIO.requestReset = {
@@ -517,6 +523,7 @@ private struct DataExportPicker: UIViewControllerRepresentable {
         try? data.write(to: tmpURL, options: .atomic)
         let picker = UIDocumentPickerViewController(forExporting: [tmpURL], asCopy: true)
         picker.delegate = context.coordinator
+        picker.shouldShowFileExtensions = true
         return picker
     }
 
