@@ -47,6 +47,11 @@ final class AMCASFSimulationAsync: NSObject, LifeformSimulation, SCNSceneRendere
 
     @MainActor func setPaused(_ paused: Bool) { isPaused = paused; scnView?.isPlaying = !paused }
 
+    /// Resets the renderer's timing state so the next render callback computes a fresh delta.
+    /// Call this after loading/setup is complete but before enabling playback to avoid a
+    /// stale or large dt on the first rendered frame.
+    func resetRendererTiming() { lastTime = 0 }
+
     private func attachRendererIfPossible() {
         guard let v = scnView else { return }
         if v.delegate !== self { v.delegate = self }

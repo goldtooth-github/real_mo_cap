@@ -140,12 +140,16 @@ struct AMCASFViewerLifeformViewAsync: View {
     private func createSimulation(scene: SCNScene) -> AMCASFSimulationAsync {
         if let existing = holder.sim { return existing }
         let sim = AMCASFSimulationAsync(scene: scene, scnView: nil)
-        // Apply UI-default playback state: play & loop ON, default speed 4.0
+        // Apply UI-default playback state: loop ON, default speed, but do NOT start playing yet.
+        // Playback is deferred until the file is loaded and loop bounds are applied,
+        // preventing jerky animation from frames advancing before setup is complete.
         sim.setSpeed(speed)
         sim.setLooping(true)
-        sim.setPlaying(true)
+        sim.setPlaying(false)  // ← deferred until interpretLoadState
         sim.setRootedX(rootFixedX)
         sim.setRootedY(rootFixedY)
+        // Hide the skeleton until loading + setup is complete (prevents flash of wrong position)
+        sim.inner.rootNode.isHidden = true
         // Auto-load bundled ASF + AMC immediately
         sim.loadFiles(asfName: asfName, amcName: amcName)
         // Store sim reference BEFORE polling so pollUntilLoaded can access it
@@ -261,6 +265,11 @@ struct AMCASFViewerLifeformViewAsync: View {
             sim.centerRootVertically(screenFraction: 0.65, orthoScale: ortho)
             // Reset playback to the correct start frame
             sim.inner.reset()
+            // NOW reveal the skeleton — it's at the correct position with correct bounds.
+            sim.inner.rootNode.isHidden = false
+            // Reset renderer timing so the first dt is clean (no stale accumulated time).
+            sim.resetRendererTiming()
+            sim.setPlaying(true)
         case .failed(let err):
             showLoadError = true
             loadErrorMessage = err.localizedDescription
