@@ -307,6 +307,8 @@ struct PlanetsLifeformViewAsync: View {
     // MARK: - MIDI helpers
     
     func loadMIDISlots() {
+        let clip = MIDISlotsClipboard.shared
+        if clip.isGlobalEnabled, !clip.globalSlots.isEmpty { midiSlots = clip.globalSlots; return }
         if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
            let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) {
             midiSlots = loaded
@@ -317,6 +319,7 @@ struct PlanetsLifeformViewAsync: View {
         }
     }
     func saveMIDISlots() {
+        guard !MIDISlotsClipboard.shared.isGlobalEnabled else { return }
         if let data = try? JSONEncoder().encode(midiSlots) { UserDefaults.standard.set(data, forKey: midiSlotsKey) }
     }
     func syncLFOHistoriesToSlots() {
@@ -552,7 +555,8 @@ struct PlanetsLifeformViewAsync: View {
             trackerColors: trackerColors,
             focusIndex: $midiFocusIndex,
             soloIndex: $midiSoloIndex,
-            onSend: { _ in }
+            onSend: { _ in },
+            onReloadLocal: { loadMIDISlots() }
         )
         .environmentObject(LifeformModeStore())
     }

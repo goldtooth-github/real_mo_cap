@@ -344,6 +344,8 @@ struct AntColonyLifeformView: View {
     
     // MARK: - MIDI/LFO Slot Management
     private func loadMIDISlots() {
+        let clip = MIDISlotsClipboard.shared
+        if clip.isGlobalEnabled, !clip.globalSlots.isEmpty { midiSlots = clip.globalSlots; return }
         if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
            let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) {
             midiSlots = loaded
@@ -353,6 +355,7 @@ struct AntColonyLifeformView: View {
     }
     
     private func saveMIDISlots() {
+        guard !MIDISlotsClipboard.shared.isGlobalEnabled else { return }
         if let data = try? JSONEncoder().encode(midiSlots) {
             UserDefaults.standard.set(data, forKey: midiSlotsKey)
         }
@@ -475,7 +478,8 @@ struct AntColonyLifeformView: View {
                         MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
                     }
                 }
-            }
+            },
+            onReloadLocal: { loadMIDISlots() }
         )
         .environmentObject(LifeformModeStore())
     }

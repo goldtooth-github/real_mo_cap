@@ -287,6 +287,8 @@ struct FlowerLifeformView: View {
 
     // MARK: - MIDI/LFO Helpers
     private func loadMIDISlots() {
+        let clip = MIDISlotsClipboard.shared
+        if clip.isGlobalEnabled, !clip.globalSlots.isEmpty { midiSlots = clip.globalSlots; return }
         if let data = UserDefaults.standard.data(forKey: midiSlotsKey), let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) {
             midiSlots = loaded
         } else {
@@ -294,6 +296,7 @@ struct FlowerLifeformView: View {
         }
     }
     private func saveMIDISlots() {
+        guard !MIDISlotsClipboard.shared.isGlobalEnabled else { return }
         if let data = try? JSONEncoder().encode(midiSlots) {
             UserDefaults.standard.set(data, forKey: midiSlotsKey)
         }
@@ -492,7 +495,8 @@ struct FlowerLifeformView: View {
             trackerColors: trackerColors,
             focusIndex: $midiFocusIndex,
             soloIndex: $midiSoloIndex,
-            onSend: { _ in }
+            onSend: { _ in },
+            onReloadLocal: { loadMIDISlots() }
         )
         .environmentObject(LifeformModeStore())
     }

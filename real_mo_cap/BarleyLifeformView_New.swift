@@ -327,11 +327,14 @@ struct BarleyLifeformView_New: View {
 
     // MARK: - MIDI/LFO Slot Management
     private func loadMIDISlots() {
+        let clip = MIDISlotsClipboard.shared
+        if clip.isGlobalEnabled, !clip.globalSlots.isEmpty { midiSlots = clip.globalSlots; return }
         if let data = UserDefaults.standard.data(forKey: midiSlotsKey),
            let loaded = try? JSONDecoder().decode([MIDIParams].self, from: data) { midiSlots = loaded }
         else { midiSlots = [MIDIParams(tracked: "Stalk Head 1.x")] }
     }
     private func saveMIDISlots() {
+        guard !MIDISlotsClipboard.shared.isGlobalEnabled else { return }
         if let data = try? JSONEncoder().encode(midiSlots) { UserDefaults.standard.set(data, forKey: midiSlotsKey) }
     }
     private func syncLFOHistoriesToSlots() {
@@ -483,7 +486,8 @@ struct BarleyLifeformView_New: View {
                         MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
                     }
                 }
-            }
+            },
+            onReloadLocal: { loadMIDISlots() }
         )
         .environmentObject(LifeformModeStore())
     }

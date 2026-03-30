@@ -41,8 +41,13 @@ struct MIDIMenuView: View {
     @Binding var focusIndex: Int?
     // Optional send callback provided by the host view
     var onSend: (([MIDIParams]) -> Void)? = nil
+    // Called when global mode is turned off so the host can reload its local slots
+    var onReloadLocal: (() -> Void)? = nil
     // Remove onImport/onExport/onReset
     private let maxSlots = 6
+    
+    // Clipboard / global singleton
+    @ObservedObject private var clipboard = MIDISlotsClipboard.shared
     
     // Local highlight state
     @State private var highlightIndex: Int? = nil
@@ -67,7 +72,8 @@ struct MIDIMenuView: View {
         trackerColorNames: [String: String] = [:],
         focusIndex: Binding<Int?> = .constant(nil),
         soloIndex: Binding<Int?> = .constant(nil),
-        onSend: (([MIDIParams]) -> Void)? = nil
+        onSend: (([MIDIParams]) -> Void)? = nil,
+        onReloadLocal: (() -> Void)? = nil
     ) {
         self._slots = slots
         self._controlPanelState = controlPanelState
@@ -77,6 +83,7 @@ struct MIDIMenuView: View {
         self._focusIndex = focusIndex
         self._soloIndex = soloIndex
         self.onSend = onSend
+        self.onReloadLocal = onReloadLocal
     }
     
     // Convenience overload: pass focusIndex without color maps
@@ -85,7 +92,8 @@ struct MIDIMenuView: View {
         trackers: [String] = ["X", "Y"],
         focusIndex: Binding<Int?> = .constant(nil),
         soloIndex: Binding<Int?> = .constant(nil),
-        onSend: (([MIDIParams]) -> Void)? = nil
+        onSend: (([MIDIParams]) -> Void)? = nil,
+        onReloadLocal: (() -> Void)? = nil
     ) {
         self.init(
             slots: slots,
@@ -95,7 +103,8 @@ struct MIDIMenuView: View {
             trackerColorNames: [:],
             focusIndex: focusIndex,
             soloIndex: soloIndex,
-            onSend: onSend
+            onSend: onSend,
+            onReloadLocal: onReloadLocal
         )
     }
 
@@ -107,7 +116,8 @@ struct MIDIMenuView: View {
         trackerColorNames: [String: String] = [:],
         focusIndex: Binding<Int?> = .constant(nil),
         soloIndex: Binding<Int?> = .constant(nil),
-        onSend: (([MIDIParams]) -> Void)? = nil
+        onSend: (([MIDIParams]) -> Void)? = nil,
+        onReloadLocal: (() -> Void)? = nil
     ) {
         self.init(
             slots: slots,
@@ -117,7 +127,8 @@ struct MIDIMenuView: View {
             trackerColorNames: trackerColorNames,
             focusIndex: focusIndex,
             soloIndex: soloIndex,
-            onSend: onSend
+            onSend: onSend,
+            onReloadLocal: onReloadLocal
         )
     }
     
@@ -164,7 +175,7 @@ struct MIDIMenuView: View {
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
                 }
-                Text("MIDI Parameters")
+                Text("MIDI")
                     .font(.title)
                     .fontWeight(.semibold)
                 Spacer()
@@ -176,13 +187,12 @@ struct MIDIMenuView: View {
                 .help(slots.count >= maxSlots ? "Maximum of \(maxSlots) slots" : "Add MIDI slot")
             }
             
-            
             // Bluetooth button (hidden on Mac Catalyst)
             if !isMacCatalyst {
                 HStack {
                     Button(action: toggleBLE) {
                         let advertising = bleState == .advertising || bleState == .starting
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: advertising
                                   ? "dot.radiowaves.left.and.right"
                                   : "antenna.radiowaves.left.and.right")
@@ -191,14 +201,16 @@ struct MIDIMenuView: View {
                                 let secs = Int(bleTimeRemaining)
                                 let mm = secs / 60
                                 let ss = secs % 60
-                                Text("Discoverable… \(String(format: "%d:%02d", mm, ss))")
+                                Text("\(String(format: "%d:%02d", mm, ss))")
+                                    .font(.caption)
                             } else {
                                 Text("Advertise BLE MIDI")
+                                    .font(.caption)
                             }
                         }
                     }
                     .buttonStyle(.plain)
-                    .padding(.vertical, 4)
+                    Spacer()
                 }
             }
             
@@ -296,34 +308,95 @@ struct MIDIMenuView: View {
                 }
             }
 
-            // Bottom-right action bar (always shown; now always enabled)
+            // Bottom action bar (icon-only)
             Divider()
-            HStack(spacing: 12) {
-                Text("Global Settings:")
+            HStack(spacing: 14) {
+                // Manual
                 Link(destination: URL(string: "https://sites.google.com/view/lifeform-oscillator/home")!) {
-                    Label("", systemImage: "book")
+                    Image(systemName: "book")
+                        .imageScale(.large)
                 }
                 .help("Open the Lifeform Oscillator Manual")
-                // Vertical divider between Manual and Load
+
+                // Separator
                 Divider()
-                    .frame(width: 1, height: 24)
-                    .background(Color.secondary.opacity(0.5))
-                    .padding(.horizontal, 2)
+                    .frame(width: 1, height: 22)
+                    .background(Color.secondary.opacity(0.4))
+
+                // Global (Solo-style toggle button)
+                Button(action: {
+                    if clipboard.isGlobalEnabled {
+                        clipboard.clearGlobal()
+                        onReloadLocal?()
+                    } else {
+                        clipboard.makeGlobal(slots)
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "globe")
+                            .imageScale(.small)
+                        Text("Global")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .fixedSize()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(clipboard.isGlobalEnabled ? Color.green.opacity(0.25) : Color.green.opacity(0.08))
+                    .foregroundColor(clipboard.isGlobalEnabled ? .green : .secondary)
+                    .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+                .help(clipboard.isGlobalEnabled ? "Disable global MIDI slots" : "Apply these MIDI slots to all simulations")
+
+                // Separator
+                Divider()
+                    .frame(width: 1, height: 22)
+                    .background(Color.secondary.opacity(0.4))
+
+                // Load
                 Button(action: {
                     let trigger = settingsIO.requestImport
                     dismiss()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { trigger?() }
                 }) {
-                    HStack(spacing: 6) { Image(systemName: "folder"); Text("Load") }
+                    Image(systemName: "square.and.arrow.up")
+                        .imageScale(.large)
                 }
+                .help("Load preset")
+
+                // Save
                 Button(action: {
                     let trigger = settingsIO.requestExport
                     dismiss()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { trigger?() }
                 }) {
-                    HStack(spacing: 6) { Image(systemName: "square.and.arrow.down"); Text("Save") }
+                    Image(systemName: "square.and.arrow.down")
+                        .imageScale(.large)
                 }
-           
+                .help("Save preset")
+
+                // Separator
+                Divider()
+                    .frame(width: 1, height: 22)
+                    .background(Color.secondary.opacity(0.4))
+
+                // Copy
+                Button(action: { clipboard.copy(slots) }) {
+                    Image(systemName: "doc.on.doc")
+                        .imageScale(.large)
+                }
+                .help("Copy MIDI slots")
+
+                // Paste
+                Button(action: {
+                    if let pasted = clipboard.paste() { slots = pasted }
+                }) {
+                    Image(systemName: "clipboard")
+                        .imageScale(.large)
+                }
+                .disabled(clipboard.copiedSlots == nil)
+                .help(clipboard.copiedSlots == nil ? "Nothing copied yet" : "Paste MIDI slots")
             }
             .padding(.top, 6)
         }
@@ -338,9 +411,21 @@ struct MIDIMenuView: View {
                     }
                 }
             }
+            // If global is active, apply global slots (deferred so it wins over
+            // any competing state restoration from the host simulation).
+            if clipboard.isGlobalEnabled, !clipboard.globalSlots.isEmpty {
+                DispatchQueue.main.async {
+                    slots = clipboard.globalSlots
+                }
+            }
             ensureBLESubscription()
             syncImmediate()
-            // Removed provider/applier wiring; Save/Load actions now delegate to the active simulation via settingsIO.request* hooks.
+        }
+        // Keep global slots in sync when the user edits while global is active
+        .onChange(of: slots) { _, newSlots in
+            if clipboard.isGlobalEnabled {
+                clipboard.globalSlots = newSlots
+            }
         }
          .onDisappear {
              bleStateCancellable?.cancel(); bleStateCancellable = nil
@@ -575,6 +660,57 @@ private struct TrackerSelector: View {
     @State private var isOpen: Bool = false
     private let maxDropdownHeight: CGFloat = 220
     
+    // Body-part ordering: head-to-toe, grouping left/right pairs together.
+    // Trackers that don't match any known body part keep their original order
+    // and appear after the known body parts.
+    private var sortedTrackers: [String] {
+        // Canonical top-to-bottom body order with L/R pairs grouped.
+        // Each entry is the bone name (lowercase) as it appears before the .x/.y suffix.
+        let bodyOrder: [String] = [
+            "head",
+            "upperneck", "lowerneck",
+            "thorax",
+            "rclavicle", "lclavicle",
+            "rhumerus", "lhumerus",
+            "rradius", "lradius",
+            "rwrist", "lwrist",
+            "rhand", "lhand",
+            "rfingers", "lfingers",
+            "rthumb", "lthumb",
+            "upperback", "lowerback",
+            "rhipjoint", "lhipjoint",
+            "rfemur", "lfemur",
+            "rtibia", "ltibia",
+            "rfoot", "lfoot",
+            "rtoes", "ltoes",
+        ]
+        // Build a lookup: bone base name → sort priority
+        var priority: [String: Int] = [:]
+        for (i, bone) in bodyOrder.enumerated() {
+            // Each bone gets x then y, so stride by 2
+            priority["\(bone).x"] = i * 2
+            priority["\(bone).y"] = i * 2 + 1
+        }
+        // "root" and "frame.index" go at the very end
+        let sentinel = bodyOrder.count * 2
+        priority["root.x"] = sentinel
+        priority["root.y"] = sentinel + 1
+        priority["frame.index"] = sentinel + 2
+
+        // Partition into known-body and unknown trackers
+        var known: [(String, Int)] = []
+        var unknown: [String] = []
+        for name in trackers {
+            if let p = priority[name.lowercased()] {
+                known.append((name, p))
+            } else {
+                unknown.append(name)
+            }
+        }
+        known.sort { $0.1 < $1.1 }
+        return known.map(\.0) + unknown
+    }
+    
     private func comp(_ name: String) -> String {
         // Use the full name for lookup, but only display the last component for label
         let parts = name.split(separator: ".")
@@ -626,7 +762,7 @@ private struct TrackerSelector: View {
             if isOpen {
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 0) {
-                        ForEach(trackers, id: \.self) { name in
+                        ForEach(sortedTrackers, id: \.self) { name in
                             let c = trackerColors[name]
                             let label: String = {
                                 if let friendly = trackerColorNames[name], friendly.contains(".x") || friendly.contains(".y") {
