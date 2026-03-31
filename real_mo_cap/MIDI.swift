@@ -11,13 +11,14 @@ struct MIDIParams: Identifiable, Codable, Equatable {
     var axis: String = "x"
     var coordinateName: String = ""
     var tracked: String = ""
+    var inverted: Bool = false
 
     // Codable compatibility for previously saved data
-    private enum CodingKeys: String, CodingKey { case id, channel, ccNumber, range, axis, coordinateName, tracked, rangeLower, rangeUpper }
+    private enum CodingKeys: String, CodingKey { case id, channel, ccNumber, range, axis, coordinateName, tracked, rangeLower, rangeUpper, inverted }
 
     init() {}
 
-    init(id: UUID = UUID(), channel: Int = 1, ccNumber: Int = 1, range: ClosedRange<Int> = 0...127, axis: String = "x", coordinateName: String = "", tracked: String = "") {
+    init(id: UUID = UUID(), channel: Int = 1, ccNumber: Int = 1, range: ClosedRange<Int> = 0...127, axis: String = "x", coordinateName: String = "", tracked: String = "", inverted: Bool = false) {
         self.id = id
         self.channel = channel
         self.ccNumber = ccNumber
@@ -25,6 +26,7 @@ struct MIDIParams: Identifiable, Codable, Equatable {
         self.axis = axis
         self.coordinateName = coordinateName
         self.tracked = tracked
+        self.inverted = inverted
     }
 
     init(from decoder: Decoder) throws {
@@ -48,6 +50,7 @@ struct MIDIParams: Identifiable, Codable, Equatable {
         self.axis = (try? container.decode(String.self, forKey: .axis)) ?? "x"
         self.coordinateName = (try? container.decode(String.self, forKey: .coordinateName)) ?? ""
         self.tracked = (try? container.decode(String.self, forKey: .tracked)) ?? ""
+        self.inverted = (try? container.decode(Bool.self, forKey: .inverted)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -60,6 +63,14 @@ struct MIDIParams: Identifiable, Codable, Equatable {
         try container.encode(axis, forKey: .axis)
         try container.encode(coordinateName, forKey: .coordinateName)
         try container.encode(tracked, forKey: .tracked)
+        try container.encode(inverted, forKey: .inverted)
+    }
+
+    /// Returns the value after applying inversion within the slot's range.
+    /// Use this when recording sparkline history so the visual matches the sent MIDI.
+    func applyInversion(_ value: Int) -> Int {
+        guard inverted else { return value }
+        return range.lowerBound + range.upperBound - value
     }
 }
 
@@ -205,6 +216,13 @@ struct MIDIOutput {
         let cc = UInt8(max(0, min(127, ccNumber)))
         let val = UInt8(max(0, min(127, value)))
         blePeripheral?.sendMIDIData([status, cc, val])
+    }
+
+    /// Convenience that reads inversion from the slot and flips the value
+    /// within the slot's range when `inverted` is true.
+    static func send(slot: MIDIParams, value: Int) {
+        let v = slot.applyInversion(value)
+        send(channel: slot.channel, ccNumber: slot.ccNumber, value: max(slot.range.lowerBound, min(slot.range.upperBound, v)))
     }
 
     // Diagnostics

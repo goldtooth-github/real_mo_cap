@@ -545,6 +545,24 @@ private struct MIDISlotRow: View {
                 }
                 .buttonStyle(.plain)
                 .help(isSoloed ? "Unsolo slot \(index + 1)" : "Solo slot \(index + 1)")
+
+                // Invert button
+                Button(action: { params.inverted.toggle() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: params.inverted ? "arrow.up.arrow.down.circle.fill" : "arrow.up.arrow.down.circle")
+                            .imageScale(.medium)
+                        Text("Inv")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(params.inverted ? Color.orange.opacity(0.25) : Color.orange.opacity(0.08))
+                    .foregroundColor(params.inverted ? .orange : .secondary)
+                    .cornerRadius(6)
+                }
+                .buttonStyle(.plain)
+                .help(params.inverted ? "Disable inversion" : "Invert MIDI output")
                 Button(action: startSweep) {
                     Image(systemName: "arrow.forward.to.line")
                         .imageScale(.medium)
@@ -632,7 +650,7 @@ private struct MIDISlotRow: View {
                 return
             }
             sweepUpper = current
-            MIDIOutput.send(channel: params.channel, ccNumber: params.ccNumber, value: current)
+            MIDIOutput.send(slot: params, value: current)
             current += 1
         }
     }

@@ -483,7 +483,7 @@ struct BarleyLifeformView_New: View {
                 for (idx, slot) in slots.enumerated() {
                     if let s = midiSoloIndex, s != idx { continue }
                     if let val = resolveBarleyTracker(slot.tracked, in: sim, range: slot.range) {
-                        MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
+                        MIDIOutput.send(slot: slot, value: val)
                     }
                 }
             },
@@ -512,11 +512,11 @@ struct BarleyLifeformView_New: View {
                 guard index < lfoHistories.count else { continue }
                 guard let ccVal = resolveBarleyTracker(slot.tracked, in: sim, range: slot.range) else { continue }
                 if midiSendCache.lastSentCCValues[index] != ccVal {
-                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: ccVal)
+                    MIDIOutput.send(slot: slot, value: ccVal)
                     midiSendCache.lastSentCCValues[index] = ccVal
                 }
                 if recordHistory {
-                    let norm = CGFloat(max(0, min(127, ccVal))) / 127.0
+                    let norm = CGFloat(max(0, min(127, slot.applyInversion(ccVal)))) / 127.0
                     lfoHistories[index].append(norm)
                 }
             }

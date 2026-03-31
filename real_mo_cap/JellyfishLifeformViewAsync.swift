@@ -454,11 +454,11 @@ struct JellyfishLifeformViewAsync: View {
                 guard index < lfoHistories.count else { continue }
                 guard let ccVal = resolveJellyTracker(slot.tracked, in: sim, range: slot.range) else { continue }
                 if midiSendCache.lastSentCCValues[index] != ccVal {
-                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: ccVal)
+                    MIDIOutput.send(slot: slot, value: ccVal)
                     midiSendCache.lastSentCCValues[index] = ccVal
                 }
                 if recordHistory {
-                    let norm = CGFloat(max(0, min(127, ccVal))) / 127.0
+                    let norm = CGFloat(max(0, min(127, slot.applyInversion(ccVal)))) / 127.0
                     lfoHistories[index].append(norm)
                 }
             }

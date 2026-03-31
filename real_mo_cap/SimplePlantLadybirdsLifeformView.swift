@@ -346,7 +346,7 @@ struct SimplePlantLadybirdsLifeformView: View {
                 for (idx, slot) in slots.enumerated() {
                     if let s = midiSoloIndex, s != idx { continue }
                     guard let val = resolveLadybirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
-                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
+                    MIDIOutput.send(slot: slot, value: val)
                 }
             },
             onReloadLocal: { loadMIDISlots() }
@@ -375,11 +375,11 @@ struct SimplePlantLadybirdsLifeformView: View {
                 guard i < lfoHistories.count else { continue }
                 guard let val = resolveLadybirdTracker(slot.tracked, in: sim, range: slot.range) else { continue }
                 if midiSendCache.lastSentCCValues[i] != val {
-                    MIDIOutput.send(channel: slot.channel, ccNumber: slot.ccNumber, value: val)
+                    MIDIOutput.send(slot: slot, value: val)
                     midiSendCache.lastSentCCValues[i] = val
                 }
                 if recordHistory {
-                    let norm = CGFloat(max(0, min(127, val))) / 127.0
+                    let norm = CGFloat(max(0, min(127, slot.applyInversion(val)))) / 127.0
                     lfoHistories[i].append(norm)
                 }
             }
